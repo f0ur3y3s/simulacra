@@ -78,9 +78,10 @@ class CompileService:
         toolchain_id: str = DEFAULT_TOOLCHAIN,
         timeout: float = 120.0,
         outputs: tuple[str, ...] = (),
+        binary_files: dict[str, bytes] | None = None,
     ) -> RunOutput:
         """Run cl.exe with arbitrary arguments (preprocessing, linking test images). Uncached."""
-        return self._backend(toolchain_id).run(files, args, output, timeout, outputs)
+        return self._backend(toolchain_id).run(files, args, output, timeout, outputs, binary_files)
 
     def compile_many(self, reqs: Iterable[CompileRequest]) -> Iterator[CompileResult]:
         """Compile concurrently; yields results in request order."""

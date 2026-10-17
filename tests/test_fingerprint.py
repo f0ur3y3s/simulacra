@@ -9,7 +9,13 @@ import pytest
 from mscmatch.compile import CompileService
 from mscmatch.disasm import NormalizedFunction, NormInsn
 from mscmatch.fingerprint import Anchor, build_db, fingerprint
-from mscmatch.fingerprint.core import anchor_category, select_anchors
+from mscmatch.fingerprint.core import (
+    AnchorMatrix,
+    Candidate,
+    anchor_category,
+    segment,
+    select_anchors,
+)
 from mscmatch.fingerprint.heuristics import FunctionFeatures, analyze_flags
 from mscmatch.fingerprint.pdb import codegen_flags, read_compilands
 from mscmatch.fingerprint.rich import strip_rich, summarize
@@ -39,9 +45,18 @@ def test_codegen_flags_filters_non_codegen_options() -> None:
 
 def feats(**kw: object) -> FunctionFeatures:
     base: dict[str, object] = dict(
-        insns=50, arg_spill=False, has_loop=False, inner_nop=False, rep_string=False,
-        gs_cookie=False, cfg_dispatch=False, lfence=0, vex=0, avx2=0, avx512=0,
-    )  # fmt: skip
+        insns=50,
+        arg_spill=False,
+        has_loop=False,
+        inner_nop=False,
+        rep_string=False,
+        gs_cookie=False,
+        cfg_dispatch=False,
+        lfence=0,
+        vex=0,
+        avx2=0,
+        avx512=0,
+    )
     base.update(kw)
     return FunctionFeatures(**base)  # type: ignore[arg-type]
 
@@ -196,3 +211,90 @@ def test_gs_buffer_functions_follow_msvc_rule() -> None:
     """
     assert gs_buffer_functions(src) == {"leaf", "caller", "st"}
     assert gs_buffer_functions(src, include_callers=False) == {"leaf", "st"}
+
+
+def _matrix(rows: list[list[bool]]) -> AnchorMatrix:
+    """rows[anchor] = which of candidates A, B reproduce it exactly."""
+    cands = [Candidate("tcA", ("/O2",), 0.6), Candidate("tcB", ("/O1",), 0.4)]
+    anchors = [Anchor(hex(0x1000 + 0x100 * i), f"f{i}", "") for i in range(len(rows))]
+    results = [[(r[ci], 1.0 if r[ci] else 0.8) for r in rows] for ci in range(2)]
+    return AnchorMatrix(anchors, [0x1000 + 0x100 * i for i in range(len(rows))], cands, results)
+
+
+def test_segment_single_config() -> None:
+    m = _matrix([[True, False]] * 5)
+    assert segment(m) == [[0, 1, 2, 3, 4]]
+
+
+def test_segment_two_regions_and_shared_anchors() -> None:
+    # first three only A, one ambiguous (both), last three only B
+    m = _matrix([[True, False]] * 3 + [[True, True]] + [[False, True]] * 3)
+    runs = segment(m)
+    assert len(runs) == 2
+    assert m.rank(runs[0])[0].toolchain == "tcA" and m.rank(runs[1])[0].toolchain == "tcB"
+    assert sorted(runs[0] + runs[1]) == list(range(7))
+
+
+def test_segment_ignores_single_noisy_anchor() -> None:
+    m = _matrix([[True, False]] * 3 + [[False, True]] + [[True, False]] * 3)
+    assert segment(m) == [list(range(7))]
+
+
+MIXED_A = """
+int a1(const int *p, int n) { int s = 0; for (int i = 0; i < n; i++) s += p[i] * 3; return s; }
+int a2(int x, int y) { return x > y ? x * 2 - y : y * 2 - x; }
+int a3(unsigned v) { int c = 0; while (v) { c += v & 1; v >>= 1; } return c; }
+int a4(const char *s) { int h = 7; while (*s) h = h * 31 + *s++; return h; }
+"""
+MIXED_B = """
+int b1(const int *p, int n) {
+    int m = p[0]; for (int i = 1; i < n; i++) if (p[i] > m) m = p[i]; return m;
+}
+int b2(int x) { return (x << 3) ^ (x >> 2); }
+int b3(const unsigned char *p, int n) {
+    unsigned s = 1; while (n--) s = s * 33 + *p++; return (int)s;
+}
+int b4(int a, int b, int c) { return a * b + c * (a - b); }
+"""
+
+
+@pytest.mark.docker
+def test_assign_ranges_on_mixed_compiler_dll(svc: CompileService) -> None:
+    import re as _re
+
+    from mscmatch.fingerprint.core import assign_ranges
+
+    a = svc.run_raw(
+        {"a.c": MIXED_A}, ["/nologo", "/c", "/Gy", "/Od", "/MT", "a.c"], "a.obj", "vs2022-17.8"
+    )
+    b = svc.run_raw(
+        {"b.c": MIXED_B}, ["/nologo", "/c", "/Gy", "/O2", "/MT", "b.c"], "b.obj", "vs2022-17.14"
+    )
+    assert a.ok and b.ok
+    exports = "EXPORTS\n" + "".join(
+        f"  {n}\n" for n in ("a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4")
+    )
+    link = svc.run_raw(
+        {"x.def": exports},
+        ["/nologo", "a.obj", "b.obj", "/LD", "/Fex.dll", "/link", "/DEF:x.def", "/NOENTRY"],
+        "x.dll",
+        "vs2022-17.14",
+        binary_files={"a.obj": a.obj, "b.obj": b.obj},
+    )
+    assert link.ok, link.stdout
+    anchors = []
+    for src in (MIXED_A, MIXED_B):
+        for name in _re.findall(r"^int (\w+)\(", src, _re.M):
+            anchors.append(Anchor(name, name, src))
+    cands = [
+        Candidate(tc, (opt, "/GS", "/MT"), 0.25)
+        for tc in ("vs2022-17.14", "vs2022-17.8")
+        for opt in ("/O2", "/Od")
+    ]
+    ranges = assign_ranges(link.obj, cands, anchors, svc)
+    assert len(ranges) == 2
+    first, second = ranges
+    assert set(first.anchor_names) == {"a1", "a2", "a3", "a4"}
+    assert set(second.anchor_names) == {"b1", "b2", "b3", "b4"}
+    assert "/Od" in first.best.flags and "/O2" in second.best.flags
+    assert first.end == second.start

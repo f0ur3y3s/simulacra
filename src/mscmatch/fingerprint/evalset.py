@@ -163,6 +163,11 @@ def pick_anchors(
     return select_anchors(pool, count, random.Random(seed))
 
 
+def anchor_pool(data: bytes, names: dict[str, int], tus: list[CorpusTU]) -> list[Anchor]:
+    """Every function usable as an anchor (for on-demand refinement)."""
+    return pick_anchors(data, names, tus, 10**9, 0)
+
+
 def run_eval(
     service: CompileService,
     db: dict[str, ToolchainRecord],
@@ -224,3 +229,153 @@ def run_eval(
         json.dumps([asdict(o) for o in report.outcomes], indent=1), encoding="utf-8"
     )
     return report
+
+
+# ---------------------------------------------------------------------------------------------
+# Mixed-compiler binaries (Phase 2.3: per-address-range assignment)
+
+_INCOMPATIBLE = {frozenset({"zlib", "miniz"})}  # miniz re-defines the zlib API
+
+
+@dataclass
+class MixedOutcome:
+    binary: str
+    variant: str
+    truth: dict[str, str]  # library -> config label
+    predicted: dict[str, str]  # library -> majority config over its functions
+    function_accuracy: float  # share of functions whose range has the right config
+    ranges: list[str]
+
+    @property
+    def ok(self) -> bool:
+        return self.truth == self.predicted
+
+
+def _compile_objects(
+    service: CompileService, cfg: EvalConfig, tus: list[CorpusTU]
+) -> dict[str, bytes]:
+    files = {f"{cfg.library}_{Path(tu.tu).stem}.c": tu.text() for tu in tus}
+    objs = tuple(k[:-2] + ".obj" for k in files)
+    args = ["/nologo", "/c", "/Gy", "/w", *cfg.flags, *sorted(files)]
+    out = service.run_raw(files, args, objs[0], cfg.toolchain, timeout=900, outputs=objs)
+    if not out.ok:
+        raise RuntimeError(f"compiling {cfg.name} failed:\n{out.stdout[-3000:]}")
+    return out.outputs
+
+
+def build_mixed_binary(
+    service: CompileService, a: EvalConfig, b: EvalConfig, tus: dict[str, list[CorpusTU]]
+) -> tuple[bytes, dict[str, int]]:
+    """Library `a` plays the prebuilt static library; the image is linked by `b`'s toolchain."""
+    objs = {
+        **_compile_objects(service, a, tus[a.library]),
+        **_compile_objects(service, b, tus[b.library]),
+    }
+    files = {
+        "lib.def": "EXPORTS\n"
+        + "".join(f"    {n}\n" for n in _exports(tus[a.library] + tus[b.library]))
+    }
+    args = [
+        "/nologo",
+        *sorted(objs),
+        "/LD",
+        "/Felib.dll",
+        "/link",
+        "/DEF:lib.def",
+        "/MAP:lib.map",
+        "/Brepro",
+        "/INCREMENTAL:NO",
+    ]
+    out = service.run_raw(
+        files, args, "lib.dll", b.toolchain, timeout=900, outputs=("lib.map",), binary_files=objs
+    )
+    if not out.ok:
+        raise RuntimeError(f"linking {a.name}+{b.name} failed:\n{out.stdout[-3000:]}")
+    image = parse_pe(out.obj)
+    names: dict[str, int] = {}
+    for line in out.outputs["lib.map"].decode("utf-8", "replace").splitlines():
+        m = _MAP_LINE.match(line)
+        if m:
+            names.setdefault(m.group(1), int(m.group(2), 16) - image.image_base)
+    return out.obj, names
+
+
+def run_mixed_eval(
+    service: CompileService,
+    db: dict[str, ToolchainRecord],
+    *,
+    n: int = 6,
+    seed: int = 0,
+    anchors: int = 40,
+    corpus_dir: Path = Path("datasets/corpus"),
+    out_dir: Path = Path("datasets/fingerprint-eval"),
+) -> list[MixedOutcome]:
+    from mscmatch.fingerprint.core import assign_ranges
+
+    rng = random.Random(seed)
+    corpora = {
+        "/MT": load_corpus(corpus_dir),
+        "/MD": load_corpus(corpus_dir.with_name(corpus_dir.name + "-md")),
+    }
+    libraries = sorted({tu.library for tu in corpora["/MT"]})
+    toolchains = sorted(load_registry())
+    outcomes: list[MixedOutcome] = []
+    for _ in range(n):
+        while True:
+            la, lb = rng.sample(libraries, 2)
+            if frozenset({la, lb}) not in _INCOMPATIBLE:
+                break
+        ta, tb = rng.sample(toolchains, 2)
+        runtime = rng.choice(RUNTIMES)
+        a = EvalConfig(la, ta, (rng.choice(OPTS), rng.choice(GSS), runtime))
+        b = EvalConfig(lb, tb, (rng.choice(OPTS), rng.choice(GSS), runtime))
+        tus = {
+            lib: [tu for tu in corpora[runtime] if tu.library == lib and tu.id not in EXCLUDE_TUS]
+            for lib in (la, lb)
+        }
+        data, names = build_mixed_binary(service, a, b, tus)
+        tag = f"mixed-{a.name}+{b.name}"
+        (out_dir / f"{tag}.dll").write_bytes(data)
+        owner = {
+            d.name: lib
+            for lib in (la, lb)
+            for tu in tus[lib]
+            for d in function_definitions(tu.text())
+        }
+        truth = {la: _label(ta, a.flags), lb: _label(tb, b.flags)}
+        for variant, blob in (("rich", data), ("stripped", strip_rich(data))):
+            rep = fingerprint(blob, db, limit=400)
+            anchor_tus = tus[la] + tus[lb]
+            picked = pick_anchors(blob, names, anchor_tus, anchors, seed)
+            ranges = assign_ranges(
+                blob,
+                rep.candidates,
+                picked,
+                service,
+                pool=anchor_pool(blob, names, anchor_tus),
+            )
+            votes: dict[str, Counter[str]] = {la: Counter(), lb: Counter()}
+            right = total = 0
+            for fname, rva in names.items():
+                lib = owner.get(fname)
+                if lib is None:
+                    continue
+                hit = next((r for r in ranges if r.start <= rva < r.end), None)
+                label = _label(hit.best.toolchain, hit.best.flags) if hit else "-"
+                votes[lib][label] += 1
+                total += 1
+                right += label == truth[lib]
+            predicted = {lib: v.most_common(1)[0][0] if v else "-" for lib, v in votes.items()}
+            o = MixedOutcome(
+                tag, variant, truth, predicted, right / max(1, total), [r.render() for r in ranges]
+            )
+            outcomes.append(o)
+            print(
+                f"{tag:70} {variant:8} ok={o.ok} fn-acc={o.function_accuracy:.0%} "
+                f"ranges={len(ranges)}",
+                flush=True,
+            )
+    (out_dir / "mixed-report.json").write_text(
+        json.dumps([asdict(o) for o in outcomes], indent=1), encoding="utf-8"
+    )
+    return outcomes

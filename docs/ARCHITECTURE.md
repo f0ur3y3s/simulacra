@@ -288,6 +288,14 @@ binary ─┬─► rich.summarize ────────────┐
   with more than 2 non-pointer elements, or a struct containing one, plus direct callers that may
   inline such a function. Without these anchors, `/GS` and `/GS-` produce identical code for
   almost every function and can't be told apart.
+- **Per-address-range assignment (`assign_ranges`)** handles binaries that mix compilers, such
+  as prebuilt static libraries. It builds a matrix of every anchor under the best few configs of
+  *every* toolchain, so a compiler the global prior all but rules out still competes. Anchors are
+  then walked in address order. A range keeps growing while some config still reproduces every
+  anchor in it, and a new range starts when none does. Runs of a single anchor are treated as
+  noise and folded into their neighbour, and adjacent ranges with the same best config are
+  merged. Boundaries fall halfway between neighbouring anchors. Explicit ranges
+  (`--ranges 0x1000-0x8000,...`) skip the segmentation and are ranked as given.
 - **PDB (`pdb.py`)** reads MSF 7.0 → DBI module list → per-module `S_COMPILE3` (compiler build,
   language) and `S_ENVBLOCK` (command line). If a PDB has command lines, its flags replace the
   heuristics.
@@ -295,6 +303,9 @@ binary ─┬─► rich.summarize ────────────┐
   `(toolchain, /O*, /GS, runtime)` configs, exporting functions through a generated `.def`. The
   linker `.map` is used only to locate anchor functions; the fingerprinter never sees it. Each
   binary is evaluated with the Rich header intact and stripped (`rich.strip_rich`).
+  `--mixed N` builds DLLs instead whose two libraries come from different toolchains (objects
+  from one container, linked in the other's). A binary passes when every library's functions
+  fall in ranges assigned that library's true config.
 
 ### Decompiler (`decomp/`, `docker/ghidra/`)
 

@@ -41,6 +41,7 @@ class Backend(Protocol):
         obj: str,
         timeout: float,
         outputs: tuple[str, ...] = (),
+        binary_files: dict[str, bytes] | None = None,
     ) -> RunOutput: ...
 
     def close(self) -> None: ...
@@ -83,9 +84,19 @@ class DockerWorker:
         obj: str,
         timeout: float,
         outputs: tuple[str, ...] = (),
+        binary_files: dict[str, bytes] | None = None,
     ) -> RunOutput:
         job = json.dumps(
-            {"files": files, "args": args, "obj": obj, "timeout": timeout, "outputs": list(outputs)}
+            {
+                "files": files,
+                "binary_files": {
+                    k: base64.b64encode(v).decode("ascii") for k, v in (binary_files or {}).items()
+                },
+                "args": args,
+                "obj": obj,
+                "timeout": timeout,
+                "outputs": list(outputs),
+            }
         )
         start = time.monotonic()
         try:
@@ -166,10 +177,11 @@ class DockerPool:
         obj: str,
         timeout: float,
         outputs: tuple[str, ...] = (),
+        binary_files: dict[str, bytes] | None = None,
     ) -> RunOutput:
         w = self._idle.get()
         try:
-            return w.run(files, args, obj, timeout, outputs)
+            return w.run(files, args, obj, timeout, outputs, binary_files)
         finally:
             self._idle.put(w)
 
@@ -199,10 +211,17 @@ class NativeBackend:
         obj: str,
         timeout: float,
         outputs: tuple[str, ...] = (),
+        binary_files: dict[str, bytes] | None = None,
     ) -> RunOutput:
         with tempfile.TemporaryDirectory(prefix="mscmatch-") as d:
             for name, text in files.items():
-                Path(d, name).write_text(text, encoding="utf-8", newline="\n")
+                path = Path(d, name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8", newline="\n")
+            for name, data in (binary_files or {}).items():
+                path = Path(d, name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
             start = time.monotonic()
             try:
                 proc = subprocess.run(

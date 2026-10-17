@@ -231,8 +231,17 @@ def cmd_fingerprint(ns: argparse.Namespace) -> int:
     if not db:
         print("no fingerprint DB; run `mscmatch fingerprint-db` first", file=sys.stderr)
         return 1
+    from mscmatch.fingerprint.core import RangeAssignment, assign_ranges
+
     data = ns.binary.read_bytes()
-    rep = fingerprint(data, db, pdb=ns.pdb.read_bytes() if ns.pdb else None)
+    want_ranges = ns.ranges is not None
+    rep = fingerprint(
+        data, db, pdb=ns.pdb.read_bytes() if ns.pdb else None, limit=400 if want_ranges else 24
+    )
+    if want_ranges and not ns.anchors:
+        print("--ranges needs --anchors", file=sys.stderr)
+        return 2
+    ranges: list[RangeAssignment] = []
     if ns.anchors:
         anchors = [
             Anchor(**json.loads(line))
@@ -240,23 +249,54 @@ def cmd_fingerprint(ns: argparse.Namespace) -> int:
             if line.strip()
         ]
         with CompileService(workers=ns.workers) as svc:
-            rep.candidates = confirm(data, rep.candidates, anchors, svc, top=ns.confirm_top)
+            if want_ranges:
+                explicit = None if ns.ranges == "auto" else _parse_ranges(ns.ranges)
+                ranges = assign_ranges(data, rep.candidates, anchors, svc, ranges=explicit)
+            else:
+                rep.candidates = confirm(data, rep.candidates, anchors, svc, top=ns.confirm_top)
     if ns.json:
         print(
             json.dumps(
                 {
                     "toolchain_probs": rep.toolchain_probs,
                     "candidates": [vars(c) for c in rep.candidates[: ns.top]],
+                    "ranges": [
+                        {
+                            "start": r.start,
+                            "end": r.end,
+                            "anchors": r.anchor_names,
+                            "best": vars(r.best),
+                        }
+                        for r in ranges
+                    ],
                     "evidence": [vars(e) for e in rep.flags.evidence],
                     "version_evidence": rep.version_evidence,
                     "warnings": rep.warnings,
+                    "producer": {
+                        "family": rep.producer.producer.value if rep.producer else None,
+                        "confidence": rep.producer.confidence if rep.producer else None,
+                        "evidence": rep.producer.evidence if rep.producer else [],
+                    },
                 },
                 indent=2,
             )
         )
     else:
-        print(rep.render(top=ns.top))
-    return 0
+        print(rep.render(top=0 if ranges else ns.top))
+        if ranges:
+            print("== ranges")
+            for r in ranges:
+                print("  " + r.render())
+    return 3 if rep.refused else 0
+
+
+def _parse_ranges(spec: str) -> list[tuple[int, int]]:
+    """'0x1000-0x8000,0x8000-0x20000' (RVAs) -> [(start, end), ...]"""
+    out = []
+    for part in spec.split(","):
+        lo, _, hi = part.partition("-")
+        out.append((int(lo, 0), int(hi, 0)))
+    return out
 
 
 def cmd_fingerprint_eval(ns: argparse.Namespace) -> int:
@@ -264,6 +304,23 @@ def cmd_fingerprint_eval(ns: argparse.Namespace) -> int:
     from mscmatch.fingerprint import load_db
     from mscmatch.fingerprint.evalset import run_eval
 
+    if ns.mixed:
+        from mscmatch.fingerprint.evalset import run_mixed_eval
+
+        with CompileService(workers=ns.workers) as svc:
+            outs = run_mixed_eval(svc, load_db(ns.db), n=ns.mixed, seed=ns.seed)
+        good = sum(o.ok for o in outs)
+        acc = sum(o.function_accuracy for o in outs) / max(1, len(outs))
+        print(
+            f"mixed: {good}/{len(outs)} binaries with every library assigned its config; "
+            f"mean function accuracy {acc:.1%}"
+        )
+        for o in outs:
+            if not o.ok:
+                print(f"  miss {o.binary} [{o.variant}] truth={o.truth} predicted={o.predicted}")
+                for r in o.ranges:
+                    print(f"      {r}")
+        return 0 if good == len(outs) else 1
     with CompileService(workers=ns.workers) as svc:
         rep = run_eval(svc, load_db(ns.db), n=ns.n, seed=ns.seed, anchors=ns.anchors)
     print(rep.summary())
@@ -392,6 +449,11 @@ def main(argv: list[str] | None = None) -> int:
         help="JSONL of {target, function, source, context} to confirm candidates",
     )
     p.add_argument("--confirm-top", type=int, default=8)
+    p.add_argument(
+        "--ranges",
+        metavar="auto|LO-HI,...",
+        help="per-address-range configs (mixed compilers); needs --anchors",
+    )
     p.add_argument("--top", type=int, default=10)
     p.add_argument("--workers", type=int)
     p.add_argument("--json", action="store_true")
@@ -401,6 +463,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-n", type=int, default=20)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--anchors", type=int, default=30)
+    p.add_argument(
+        "--mixed",
+        type=int,
+        default=0,
+        help="instead: N mixed-compiler binaries scored per address range",
+    )
     p.add_argument("--db", type=Path, default=Path("datasets/fingerprint"))
     p.add_argument("--workers", type=int)
     p.set_defaults(fn=cmd_fingerprint_eval)

@@ -42,6 +42,8 @@ candidate, `+` extra in candidate.
 | `mscmatch fingerprint-db` | build per-toolchain evidence (CRT signatures, Rich lib builds, linker version) from probe images |
 | `mscmatch fingerprint target.dll [--pdb x.pdb] [--anchors a.jsonl]` | ranked `(toolchain, flags)` candidates with evidence |
 | `mscmatch fingerprint-eval -n 20` | Phase 2 acceptance on held-out binaries we build (Rich intact + stripped) |
+| `mscmatch fingerprint target.dll --anchors a.jsonl --ranges auto` | per-address-range configs for binaries mixing compilers (prebuilt libs) |
+| `mscmatch fingerprint-eval --mixed 8` | mixed-compiler binaries, scored per library |
 
 Anchors are JSONL lines `{"target": "sub_180001234" | "0x1234" | "export", "function": "name",
 "source": "...", "context": "..."}`; each is compiled under the top candidates and the

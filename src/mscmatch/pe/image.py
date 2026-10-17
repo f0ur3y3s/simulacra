@@ -62,6 +62,7 @@ class PEImage:
     sections: list[PESection]
     dirs: list[tuple[int, int]]
     rich: list[RichEntry] = field(default_factory=list)
+    coff_symbols: int = 0  # COFF symbol count in the file header (MSVC link never keeps any)
 
     # -- address helpers -------------------------------------------------------------------
     def section_of(self, rva: int) -> PESection | None:
@@ -135,6 +136,29 @@ class PEImage:
             i += 1
             if i > 100000:
                 raise PEError("runaway import thunk table")
+
+    @cached_property
+    def import_dlls(self) -> list[str]:
+        """Names of directly imported DLLs, in table order."""
+        rva, _size = self.dir(DIR_IMPORT)
+        out: list[str] = []
+        pos = rva
+        while rva:
+            oft, _ts, _fc, name_rva, ft = struct.unpack("<IIIII", self.read(pos, 20))
+            if not (oft or name_rva or ft):
+                break
+            out.append(self.cstr(name_rva).decode("ascii", "replace"))
+            pos += 20
+        return out
+
+    @cached_property
+    def debug_types(self) -> list[int]:
+        """IMAGE_DEBUG_DIRECTORY entry types (2 CODEVIEW, 12 VC_FEATURE, 13 POGO, 16 REPRO...)."""
+        rva, size = self.dir(DIR_DEBUG)
+        if not rva:
+            return []
+        raw = self.read(rva, size)
+        return [int(struct.unpack_from("<I", raw, off + 12)[0]) for off in range(0, size - 27, 28)]
 
     @cached_property
     def exports(self) -> dict[str, int]:
@@ -239,7 +263,7 @@ def parse_pe(data: bytes) -> PEImage:
     if data[e_lfanew : e_lfanew + 4] != b"PE\0\0":
         raise PEError("missing PE signature")
     coff = e_lfanew + 4
-    machine, nsects, ts, _st, _ns, opt_size, _ch = struct.unpack_from("<HHIIIHH", data, coff)
+    machine, nsects, ts, symtab, nsyms, opt_size, _ch = struct.unpack_from("<HHIIIHH", data, coff)
     if machine != 0x8664:
         raise PEError(f"unsupported machine {machine:#x}")
     opt = coff + 20
@@ -261,4 +285,5 @@ def parse_pe(data: bytes) -> PEImage:
     return PEImage(
         data, image_base, entry, (lmaj, lmin), ts, sections,
         [(int(a), int(b)) for a, b in dirs], _parse_rich(data, e_lfanew),
+        int(nsyms) if symtab else 0,
     )  # fmt: skip

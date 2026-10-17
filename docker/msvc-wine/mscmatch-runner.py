@@ -2,7 +2,8 @@
 """In-container compile runner. Reads one JSON job on stdin, writes one JSON result on stdout.
 
 Job:    {"files": {"name": "text", ...}, "args": ["/c", ...], "obj": "src.obj", "timeout": 20,
-         "outputs": ["extra.map", ...]}                       (outputs optional)
+         "outputs": ["extra.map", ...],                       (optional)
+         "binary_files": {"name": "<base64>", ...}}           (optional, e.g. objects to link)
 Result: {"ok": bool, "returncode": int, "stdout": str, "stderr": str,
          "obj_b64": str | null, "outputs_b64": {name: str | null}, "elapsed": float,
          "timed_out": bool}
@@ -24,18 +25,26 @@ CL = "/opt/msvc/bin/x64/cl"
 JOB_DIR = "/work/job"
 
 
+def _job_path(name: str) -> str:
+    """Path under JOB_DIR for a relative job file name; rejects anything escaping it."""
+    parts = name.replace("\\", "/").split("/")
+    if name.startswith(("/", "\\")) or any(p in ("", ".", "..") for p in parts):
+        raise SystemExit(f"bad file name {name!r}")
+    path = os.path.join(JOB_DIR, *parts)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
 def main() -> None:
     job = json.load(sys.stdin)
     shutil.rmtree(JOB_DIR, ignore_errors=True)
     os.makedirs(JOB_DIR)
     for name, text in job["files"].items():
-        parts = name.replace("\\", "/").split("/")
-        if name.startswith(("/", "\\")) or any(p in ("", ".", "..") for p in parts):
-            raise SystemExit(f"bad file name {name!r}")
-        path = os.path.join(JOB_DIR, *parts)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
+        with open(_job_path(name), "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
+    for name, b64 in job.get("binary_files", {}).items():
+        with open(_job_path(name), "wb") as f:
+            f.write(base64.b64decode(b64))
 
     timed_out = False
     start = time.monotonic()

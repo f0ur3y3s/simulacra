@@ -19,6 +19,7 @@ from mscmatch.fingerprint.heuristics import (
     function_features,
 )
 from mscmatch.fingerprint.pdb import read_compilands
+from mscmatch.fingerprint.producer import Producer, ProducerVerdict, identify_producer
 from mscmatch.fingerprint.rich import RichSummary, summarize
 from mscmatch.harness import function_from_obj
 from mscmatch.pe import PEFunctions, PEImage, extract_pe_function, parse_pe
@@ -71,9 +72,20 @@ class FingerprintReport:
     crt_matches: dict[str, int] = field(default_factory=dict)
     pdb_flags: tuple[str, ...] | None = None
     warnings: list[str] = field(default_factory=list)
+    producer: ProducerVerdict | None = None
+
+    @property
+    def refused(self) -> bool:
+        """True when the image is confidently not MSVC output, so nothing can be matched."""
+        return self.producer is not None and self.producer.producer in (
+            Producer.MINGW_GCC,
+            Producer.CLANG,
+            Producer.NON_MSVC,
+        )
 
     def render(self, top: int = 10) -> str:
-        lines = ["== version evidence", *("  " + e for e in self.version_evidence)]
+        lines = ["== producer", "  " + self.producer.render()] if self.producer else []
+        lines += ["== version evidence", *("  " + e for e in self.version_evidence)]
         lines.append(
             "  toolchain probabilities: "
             + ", ".join(
@@ -202,6 +214,7 @@ def fingerprint(
     hashes = function_hashes(pe, fx)
     vscores, vev, crt = _version_scores(pe, rich, db, hashes)
     warnings: list[str] = []
+    producer = identify_producer(pe, max(crt.values(), default=0))
 
     pdb_flags = None
     if pdb is not None:
@@ -219,8 +232,7 @@ def fingerprint(
 
     probs = _softmax(vscores) if vscores else {}
     imports_dll = any(
-        name.split("!")[0].lower().startswith(_CRT_DLL_PREFIXES) or False
-        for name in _import_dlls(pe)
+        name.split("!")[0].lower().startswith(_CRT_DLL_PREFIXES) or False for name in pe.import_dlls
     )
     feats = _user_features(pe, fx, hashes, db)
     flags = analyze_flags(
@@ -239,8 +251,27 @@ def fingerprint(
         cands = [Candidate(best, pdb_flags, 1.0)]
     else:
         cands = _expand(flags, probs, limit)
+    if producer.producer in (Producer.MINGW_GCC, Producer.CLANG, Producer.NON_MSVC):
+        warnings.insert(
+            0,
+            f"not built by MSVC ({producer.producer.value}, p={producer.confidence:.2f}): "
+            "mscmatch cannot match this image; no candidates",
+        )
+        cands = []
+    elif producer.producer is Producer.UNKNOWN:
+        warnings.append("toolchain family unclear; MSVC candidates may not apply")
     return FingerprintReport(
-        rich, pe.linker_version, probs, vev, flags, cands, len(feats), crt, pdb_flags, warnings
+        rich,
+        pe.linker_version,
+        probs,
+        vev,
+        flags,
+        cands,
+        len(feats),
+        crt,
+        pdb_flags,
+        warnings,
+        producer,
     )
 
 
@@ -248,19 +279,79 @@ def _lib_builds(db: dict[str, ToolchainRecord]) -> set[int]:
     return set().union(*(set(r.lib_compiler_builds) for r in db.values())) if db else set()
 
 
-def _import_dlls(pe: PEImage) -> set[str]:
-    import struct
+@dataclass
+class AnchorMatrix:
+    """Exactness and score of every usable anchor under every candidate configuration."""
 
-    rva, _ = pe.dir(1)
-    dlls: set[str] = set()
-    pos = rva
-    while rva:
-        oft, _ts, _fc, name_rva, ft = struct.unpack("<IIIII", pe.read(pos, 20))
-        if not (oft or name_rva or ft):
-            break
-        dlls.add(pe.cstr(name_rva).decode("ascii", "replace"))
-        pos += 20
-    return dlls
+    anchors: list[Anchor]  # usable anchors, sorted by target RVA
+    rvas: list[int]
+    candidates: list[Candidate]
+    results: list[list[tuple[bool, float]]]  # [candidate][anchor]
+
+    def rank(self, anchor_idx: list[int]) -> list[Candidate]:
+        """Candidates ranked over a subset of anchors (copies, with counts filled in)."""
+        out = []
+        for ci, c in enumerate(self.candidates):
+            rows = [self.results[ci][ai] for ai in anchor_idx]
+            out.append(
+                Candidate(
+                    c.toolchain,
+                    c.flags,
+                    c.prior,
+                    exact=sum(e for e, _ in rows),
+                    mean_score=sum(sc for _, sc in rows) / len(rows) if rows else 0.0,
+                    anchors=len(rows),
+                )
+            )
+        out.sort(key=lambda c: c.key(), reverse=True)
+        return out
+
+    def exact_set(self, ai: int) -> frozenset[int]:
+        """Candidates reproducing anchor `ai` exactly, else those tied for its best score."""
+        exact = frozenset(ci for ci in range(len(self.candidates)) if self.results[ci][ai][0])
+        if exact:
+            return exact
+        best = max(self.results[ci][ai][1] for ci in range(len(self.candidates)))
+        return frozenset(
+            ci for ci in range(len(self.candidates)) if self.results[ci][ai][1] >= best - 1e-9
+        )
+
+
+def anchor_matrix(
+    data: bytes, candidates: list[Candidate], anchors: list[Anchor], service: CompileService
+) -> AnchorMatrix:
+    pe = parse_pe(data)
+    fx = PEFunctions(pe)
+    targets: dict[str, NormalizedFunction] = {}
+    rvas: dict[str, int] = {}
+    for a in anchors:
+        try:
+            targets[a.target] = anonymize(normalize(extract_pe_function(pe, a.target, index=fx)))
+            rvas[a.target] = fx.resolve(a.target)
+        except Exception:
+            continue
+    usable = sorted((a for a in anchors if a.target in targets), key=lambda a: rvas[a.target])
+    reqs = [
+        CompileRequest(a.source, a.context, a.function, c.toolchain, c.flags, timeout=120)
+        for c in candidates
+        for a in usable
+    ]
+    flat: list[tuple[bool, float]] = []
+    for req, res in zip(reqs, service.compile_many(reqs), strict=True):
+        if not res.ok:
+            flat.append((False, 0.0))
+            continue
+        try:
+            cand = anonymize(function_from_obj(res.obj_bytes, req.function_name))
+        except Exception:
+            flat.append((False, 0.0))
+            continue
+        target = targets[usable[len(flat) % len(usable)].target]
+        rep = score(target, cand, max_diff_lines=0)
+        flat.append((rep.exact, rep.score))
+    n = len(usable)
+    results = [flat[i * n : (i + 1) * n] for i in range(len(candidates))]
+    return AnchorMatrix(usable, [rvas[a.target] for a in usable], list(candidates), results)
 
 
 def confirm(
@@ -271,41 +362,200 @@ def confirm(
     top: int = 8,
 ) -> list[Candidate]:
     """Re-rank the top candidates by compiling anchor functions under each configuration."""
-    pe = parse_pe(data)
-    fx = PEFunctions(pe)
-    targets = {}
-    for a in anchors:
-        try:
-            targets[a.target] = anonymize(normalize(extract_pe_function(pe, a.target, index=fx)))
-        except Exception:
-            continue
-    usable = [a for a in anchors if a.target in targets]
     head = candidates[:top]
-    reqs = [
-        (c, a, CompileRequest(a.source, a.context, a.function, c.toolchain, c.flags, timeout=120))
-        for c in head
-        for a in usable
-    ]
-    results = service.compile_many(r for _, _, r in reqs)
-    per: dict[int, list[tuple[bool, float]]] = {id(c): [] for c in head}
-    for (c, a, _), res in zip(reqs, results, strict=True):
-        if not res.ok:
-            per[id(c)].append((False, 0.0))
-            continue
-        try:
-            cand = anonymize(function_from_obj(res.obj_bytes, a.function))
-        except Exception:
-            per[id(c)].append((False, 0.0))
-            continue
-        rep = score(targets[a.target], cand, max_diff_lines=0)
-        per[id(c)].append((rep.exact, rep.score))
-    for c in head:
-        rows = per[id(c)]
-        c.anchors = len(rows)
-        c.exact = sum(e for e, _ in rows)
-        c.mean_score = sum(s for _, s in rows) / len(rows) if rows else 0.0
-    head.sort(key=lambda c: c.key(), reverse=True)
-    return head + candidates[top:]
+    m = anchor_matrix(data, head, anchors, service)
+    return m.rank(list(range(len(m.anchors)))) + candidates[top:]
+
+
+@dataclass
+class RangeAssignment:
+    start: int  # RVA, inclusive
+    end: int  # RVA, exclusive
+    ranked: list[Candidate]  # best first, counted over this range's anchors
+    anchor_names: list[str]
+
+    @property
+    def best(self) -> Candidate:
+        return self.ranked[0]
+
+    def render(self) -> str:
+        return (
+            f"[{self.start:#x}, {self.end:#x})  {len(self.anchor_names)} anchors  "
+            f"-> {self.best.render()}"
+        )
+
+
+def _range_head(candidates: list[Candidate], per_toolchain: int) -> list[Candidate]:
+    """Candidates for range assignment: the best `per_toolchain` of every toolchain, so a
+    compiler the global prior all but rules out (a prebuilt library's) still competes."""
+    head: list[Candidate] = []
+    counts: dict[str, int] = {}
+    for c in candidates:
+        if counts.get(c.toolchain, 0) < per_toolchain:
+            head.append(c)
+            counts[c.toolchain] = counts.get(c.toolchain, 0) + 1
+    return head
+
+
+def segment(m: AnchorMatrix, min_anchors: int = 2) -> list[list[int]]:
+    """Split anchors (address order) into runs that one configuration explains.
+
+    Greedy: extend the current run while some candidate reproduces every anchor in it; start a
+    new run when none does. Runs shorter than `min_anchors` are noise (one odd function) and are
+    folded into their predecessor.
+    """
+    runs: list[list[int]] = []
+    current: frozenset[int] = frozenset()
+    for ai in range(len(m.anchors)):
+        s = m.exact_set(ai)
+        if runs and current & s:
+            runs[-1].append(ai)
+            current &= s
+        else:
+            runs.append([ai])
+            current = s
+    merged: list[list[int]] = []
+    for run in runs:
+        if merged and len(run) < min_anchors:
+            merged[-1].extend(run)
+        else:
+            merged.append(run)
+    if len(merged) > 1 and len(merged[0]) < min_anchors:
+        merged[1] = merged[0] + merged[1]
+        merged.pop(0)
+    # Neighbouring runs that ended up with the same best configuration are one range.
+    out: list[list[int]] = []
+    for run in merged:
+        if out and _same_best(m, out[-1], run):
+            out[-1].extend(run)
+        else:
+            out.append(run)
+    return out
+
+
+def _same_best(m: AnchorMatrix, a: list[int], b: list[int]) -> bool:
+    ra, rb = m.rank(a)[0], m.rank(b)[0]
+    return (ra.toolchain, ra.flags) == (rb.toolchain, rb.flags)
+
+
+def _tied(ranked: list[Candidate]) -> list[Candidate]:
+    """Candidates indistinguishable from the best one on the anchors seen so far."""
+    top = ranked[0]
+    return [c for c in ranked if c.exact == top.exact and abs(c.mean_score - top.mean_score) < 1e-9]
+
+
+def _refine(
+    data: bytes,
+    r: RangeAssignment,
+    pool: list[tuple[Anchor, int]],
+    used: set[str],
+    service: CompileService,
+    per_round: int,
+    min_anchors: int,
+) -> RangeAssignment:
+    """Pull extra anchors from inside the range until its best configuration is unique (or the
+    pool runs out). GS-buffer anchors go first when the tied configurations differ in /GS."""
+    for _ in range(3):
+        tied = _tied(r.ranked)
+        if len(tied) < 2 and len(r.anchor_names) >= min_anchors:
+            return r
+        inside = [a for a, rva in pool if r.start <= rva < r.end and a.target not in used]
+        if not inside:
+            return r
+        gs_split = len({("/GS" in c.flags) for c in tied}) > 1
+        inside.sort(key=lambda a: (not (gs_split and a.gs_buffer), len(a.source)))
+        extra = inside[:per_round]
+        used.update(a.target for a in extra)
+        contenders = tied if len(tied) > 1 else r.ranked[: max(4, len(tied))]
+        m = anchor_matrix(data, contenders, extra, service)
+        if not m.anchors:
+            return r
+        fresh = {(c.toolchain, c.flags): c for c in m.rank(list(range(len(m.anchors))))}
+        merged = []
+        for c in r.ranked:
+            f = fresh.get((c.toolchain, c.flags))
+            if f is None:
+                # Not re-tested: count the new anchors as unknown (neither exact nor scored).
+                merged.append(
+                    Candidate(
+                        c.toolchain,
+                        c.flags,
+                        c.prior,
+                        c.exact,
+                        c.mean_score * c.anchors / (c.anchors + len(m.anchors)),
+                        c.anchors + len(m.anchors),
+                    )
+                )
+                continue
+            n = c.anchors + f.anchors
+            merged.append(
+                Candidate(
+                    c.toolchain,
+                    c.flags,
+                    c.prior,
+                    c.exact + f.exact,
+                    (c.mean_score * c.anchors + f.mean_score * f.anchors) / n,
+                    n,
+                )
+            )
+        merged.sort(key=lambda c: c.key(), reverse=True)
+        r = RangeAssignment(
+            r.start, r.end, merged, r.anchor_names + [a.function for a in m.anchors]
+        )
+    return r
+
+
+def assign_ranges(
+    data: bytes,
+    candidates: list[Candidate],
+    anchors: list[Anchor],
+    service: CompileService,
+    *,
+    ranges: list[tuple[int, int]] | None = None,
+    per_toolchain: int = 6,
+    pool: list[Anchor] | None = None,
+    per_round: int = 8,
+    min_anchors: int = 8,
+) -> list[RangeAssignment]:
+    """Per-address-range configurations (CLAUDE.md Phase 2.3: binaries mixing compilers, e.g.
+    prebuilt static libraries). With explicit `ranges`, each gets its own ranking; otherwise
+    the ranges are found from where the anchors' best configuration changes.
+
+    `pool` holds further anchors that may be compiled on demand. Any range whose best
+    configurations still tie, or that has fewer than `min_anchors`, draws more from the pool
+    functions inside it."""
+    m = anchor_matrix(data, _range_head(candidates, per_toolchain), anchors, service)
+    if not m.anchors:
+        return []
+    names = [a.function for a in m.anchors]
+    out: list[RangeAssignment] = []
+    if ranges is not None:
+        for lo, hi in ranges:
+            idx = [i for i, r in enumerate(m.rvas) if lo <= r < hi]
+            if idx:
+                out.append(RangeAssignment(lo, hi, m.rank(idx), [names[i] for i in idx]))
+    else:
+        runs = segment(m)
+        end_of_image = max(s.rva + max(s.vsize, s.raw_size) for s in parse_pe(data).sections)
+        for k, run in enumerate(runs):
+            lo = 0 if k == 0 else (m.rvas[runs[k - 1][-1]] + m.rvas[run[0]]) // 2
+            hi = (
+                end_of_image
+                if k == len(runs) - 1
+                else (m.rvas[run[-1]] + m.rvas[runs[k + 1][0]]) // 2
+            )
+            out.append(RangeAssignment(lo, hi, m.rank(run), [names[i] for i in run]))
+    if pool:
+        fx = PEFunctions(parse_pe(data))
+        located: list[tuple[Anchor, int]] = []
+        for a in pool:
+            try:
+                located.append((a, fx.resolve(a.target)))
+            except Exception:
+                continue
+        used = {a.target for a in m.anchors}
+        out = [_refine(data, r, located, used, service, per_round, min_anchors) for r in out]
+    return out
 
 
 _STACK_ADDR = re.compile(r"^lea \w+, \[(?:rsp|rbp)\+0x[0-9a-f]+\]$")

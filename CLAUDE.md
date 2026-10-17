@@ -7,13 +7,15 @@ that recompiles to the **same machine code**. An LLM agent iterates in a loop �
 decompiler output, write C, compile with the exact MSVC toolchain, diff against the target,
 revise — until the function matches or the turn budget runs out.
 
-The project has three products, built in this order:
+The project has four products, built in this order:
 
 1. **Harness** — reproducible MSVC compilation under Wine, per-function extraction, normalized
    diffing and scoring. Everything else depends on it.
 2. **Toolchain fingerprinter** — recovers compiler version and flags from an unknown binary.
 3. **Agent + training pipeline** — the decompile loop, an evaluation set, baselines, and (only if
    baselines justify it) fine-tuning of a local open-weight model.
+4. **Whole-program mode** — ingest a directory of binaries (an installed program) and work
+   through it function by function, resumably (Phase 6).
 
 Do not start a later phase until the earlier phase's acceptance criteria pass.
 
@@ -51,6 +53,7 @@ mscmatch/
     agent/                      # agent loop, tools, prompt templates, model backends
     train/                      # SFT / repair / GRPO scripts (Unsloth)
     eval/                       # eval runner + reports
+    project/                    # whole-program mode: ingest, library ID, scheduler, state store
   tests/
   datasets/                     # gitignored; built artifacts
 ```
@@ -122,6 +125,11 @@ mscmatch/
 
 `mscmatch fingerprint <binary>` outputs ranked candidate `(toolchain_id, flags)` with evidence.
 
+0. **Producer check** — decide whether the image is MSVC output at all before ranking anything:
+   Rich header, MSVC-only debug directory entries (`VC_FEATURE`/`POGO`), linker version, CRT
+   signature matches, versus GNU ld / lld markers (linker version, GNU/LLVM runtime DLLs, kept
+   COFF symbols, DWARF sections, nop padding). When the image is confidently MinGW GCC or
+   clang/lld, report that and return no candidates (CLI exit code 3).
 1. **Version evidence**
    - Rich header: decode prodid/build entries; map to toolchain registry.
    - PE optional header linker version.
@@ -226,6 +234,53 @@ Use **Unsloth** with LoRA on a Qwen coder instruct checkpoint (not a base model)
 
 **OPEN**: whether to also distill from frontier-model trajectories (requires checking the API
 provider's terms first). Do not do this without user confirmation.
+
+## Phase 6 — Whole-program mode
+
+Feed in a directory of binaries (an installed program: EXEs plus DLLs) and work through it
+function by function, resumably. Depends on Phase 4 (the agent) and uses the Phase 3 dataset for
+library identification. Does not depend on Phase 5.
+
+1. **Ingest** — `mscmatch project init <dir> --project <path>`:
+   - Find PE files, dedupe by sha256, record version info and the import/export graph between
+     them.
+   - Producer check and fingerprint every binary (per address range where compilers are mixed).
+     Non-MSVC binaries are recorded as skipped; LTCG binaries as degraded.
+2. **Inventory and triage** (per binary):
+   - Function list (`.pdata`, exports, call targets for leaf functions), call graph, sizes.
+   - Skip CRT functions (fingerprint signature DB) and known library code (step 3).
+3. **Library identification**:
+   - Index the Phase 3 dataset by hash of the anonymized normalized target, per toolchain ×
+     flags. An exact, unique hit assigns the function its known source without running the
+     agent. Ambiguous hits (several sources, same code) are reported, never guessed.
+4. **Scheduler**:
+   - Work bottom-up over each call graph (callees before callers, so recovered prototypes and
+     types reach the callers), smaller functions first within a level.
+   - Early exact matches double as anchors: re-run fingerprint confirmation (and range
+     assignment) as they accumulate.
+   - Budgets per function, per binary and per project (turns, tokens, cost), with stop rules.
+5. **Shared context** per binary: prototypes, struct definitions and globals recovered from
+   matched functions plus Ghidra types, versioned, served to the agent by `get_context`.
+6. **State**: a sqlite project store holding binaries, functions, attempts (source, score, diff,
+   model, cost) and a status per function: `pending`, `library`, `exact`, `near` (best score
+   ≥ 0.9), `failed`, `skipped`. Every step is resumable; killing the process loses at most the
+   attempts in flight.
+7. **CLI**: `project status`, `project step [-n N]`, `project next`, `project run --budget …`,
+   `project retry <fn>`, `project show <fn>`, `project export` (a source tree per binary:
+   matched functions grouped into TUs by address/link order, placeholders for the rest).
+
+Non-goals: relinking byte-identical whole binaries (data layout, TU boundaries, link order);
+C++ until the per-function agent handles it.
+
+### Phase 6 acceptance
+
+- On a held-out multi-binary program we build ourselves: at least 5 MSVC EXEs/DLLs with mixed
+  configurations, statically linked vcpkg libraries plus unique code, and one non-MSVC binary.
+  - The non-MSVC binary is refused; every MSVC binary (and range) gets its true config top-1.
+  - Library identification precision ≥ 99 % (no wrong source ever assigned); recall reported.
+  - A run killed and resumed reaches the same final state as an uninterrupted run.
+  - Report exact-match rate per binary, functions handled by library ID vs. agent, total cost.
+- Then one real MSVC-built open-source program. **OPEN**: which program; ask the user.
 
 ## Known hard cases (do not over-optimize for these early)
 
