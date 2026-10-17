@@ -1,0 +1,24 @@
+# Registered MSVC toolchains. Adding a version = new entry here + `mscmatch toolchain build <id>`.
+#
+# cl_version is what `cl.exe` prints; cl_build is the build number that appears in Rich header
+# entries (@comp.id / prodid build) of objects and images it produces.
+
+[[toolchain]]
+id = "vs2022-17.14"
+vs_major = 17
+msvc_version_arg = "17.14"  # vsdownload.py --msvc-version
+cl_version = "19.44.35229"
+cl_build = 35229
+link_version = "14.44.35229"
+sdk_version = "10.0.26100"
+image = "msvc-19.44.35229-sdk-10.0.26100"
+
+[[toolchain]]
+id = "vs2022-17.8"
+vs_major = 17
+msvc_version_arg = "17.8"
+cl_version = "19.38.33145"
+cl_build = 33145
+link_version = "14.38.33145"
+sdk_version = "10.0.22621"
+image = "msvc-19.38.33145-sdk-10.0.22621"

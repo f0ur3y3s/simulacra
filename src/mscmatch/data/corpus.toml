@@ -1,0 +1,42 @@
+# Fixed C corpus for the Wine equivalence check (1.4) and the Phase 1 round-trip acceptance.
+# Source archives only (no binaries); hashes pinned.
+
+[[library]]
+name = "zlib"
+url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+root = "zlib-1.3.1"
+sources = ["*.c"]
+include = ["."]
+
+[[library]]
+name = "lua"
+url = "https://www.lua.org/ftp/lua-5.4.7.tar.gz"
+sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30"
+root = "lua-5.4.7/src"
+sources = ["*.c"]
+include = ["."]
+
+[[library]]
+name = "lz4"
+url = "https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz"
+sha256 = "537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b"
+root = "lz4-1.10.0/lib"
+sources = ["lz4.c", "lz4hc.c", "lz4frame.c", "lz4file.c", "xxhash.c"]
+include = ["."]
+
+[[library]]
+name = "cjson"
+url = "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.tar.gz"
+sha256 = "3aa806844a03442c00769b83e99970be70fbef03735ff898f4811dd03b9f5ee5"
+root = "cJSON-1.7.18"
+sources = ["cJSON.c", "cJSON_Utils.c"]
+include = ["."]
+
+[[library]]
+name = "miniz"
+url = "https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip"
+sha256 = "ada38db0b703a56d3dd6d57bf84a9c5d664921d870d8fea4db153979fb5332c5"
+root = ""
+sources = ["miniz.c"]
+include = ["."]

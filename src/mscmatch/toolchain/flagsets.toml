@@ -1,0 +1,8 @@
+# Flag sets used for dataset builds (Phase 3) and as fingerprint candidates (Phase 2).
+[flagsets]
+O2 = ["/O2", "/GS"]
+O2_nogs = ["/O2", "/GS-"]
+O1 = ["/O1", "/GS"]
+O1_nogs = ["/O1", "/GS-"]
+Od = ["/Od", "/GS"]
+Od_nogs = ["/Od", "/GS-"]
