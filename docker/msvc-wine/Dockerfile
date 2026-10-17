@@ -39,6 +39,10 @@ RUN ./vsdownload.py --accept-license --major ${VS_MAJOR} \
     ./install.sh /opt/msvc && \
     cd / && rm -rf /opt/msvc-wine-src
 
+# CMake + Ninja configure library sources (Phase 3 vcpkg ports) for MSVC under Wine.
+RUN apt-get update && apt-get install -y --no-install-recommends cmake ninja-build && \
+    apt-get clean -y && rm -rf /var/lib/apt/lists/*
+
 COPY simulacra-runner.py /usr/local/bin/simulacra-runner
 RUN chmod +x /usr/local/bin/simulacra-runner
 

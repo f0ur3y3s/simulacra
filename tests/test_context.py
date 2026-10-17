@@ -95,3 +95,14 @@ def test_slice_recompiles_to_target() -> None:
         s2 = TUIndex(TU).slice("callee", target_symbols(t2.listing()))
         c2, err2 = compile_function(svc, s2.source, "callee", ("/O2",), s2.context)
         assert c2 is not None and score(t2, c2).exact, err2
+
+
+def test_library_ownership_with_absolute_project_paths() -> None:
+    raw = (
+        b'#line 1 "/opt/msvc/kits/10/include/10.0.26100.0/ucrt/stdio.h"\nint a;\n'
+        b'#line 1 "z:/work/job/src/lib/x.c"\nint b;\n'
+        b'#line 1 "/work/job/build/config.h"\nint c;\n'
+    )
+    lm = LineMap.build(raw)
+    assert not lm.is_library(raw.index(b"int a"))
+    assert lm.is_library(raw.index(b"int b")) and lm.is_library(raw.index(b"int c"))

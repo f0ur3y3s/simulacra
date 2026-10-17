@@ -11,7 +11,7 @@ and why it is built the way it is. The phase plan and acceptance criteria are in
 |---|---|---|
 | 1 | Harness: compile service, COFF/PE extraction, normalization, scoring | **Done**, acceptance passed |
 | 2 | Toolchain fingerprinter | **Done**, acceptance passed on 3 seeds |
-| 3 | Data pipeline (vcpkg builds, Ghidra, dataset records) | Started: Ghidra decompiler image + wrapper done |
+| 3 | Data pipeline (vcpkg builds, Ghidra, dataset records) | In progress: pipeline built, first full build running |
 | 4 | Agent loop + baselines | Not started (`agent/prompts/` is a placeholder) |
 | 5 | Fine-tuning | Not started; needs approval after Phase 4 |
 
@@ -334,6 +334,59 @@ Docker Desktop, remote engines and podman.
   and the agent gets pseudo-C precomputed. If latency ever matters, the answer is a persistent
   Ghidra process (as tiresias's ghidra-mcp does), not a different engine.
 
+### Phase 3 data pipeline (`data/`)
+
+```
+sources ──► builds ──► Ghidra ──► records (Parquet shard per toolchain × flag set × library)
+   │           │                       │
+   │           └ DLL + .map             └ finalize ──► train / val / test (+ repair, dropout)
+   └ corpus libraries, vcpkg ports
+```
+
+- **Sources (`sources.py`, `vcpkg.py`):** every library TU is preprocessed with `/P`, keeping
+  `#line` markers so the slicer can tell library code from toolchain headers. Each toolchain
+  preprocesses with its own SDK, as a real build with it would.
+  - Libraries come from `corpus.toml` and from **vcpkg ports** (`vcpkg_ports.toml`). vcpkg
+    cannot drive MSVC from a Linux host, so the ports serve as a pinned catalog.
+  - Each portfile is evaluated with `cmake -P` in the container, with every vcpkg helper stubbed
+    so it records its arguments (x64-windows-static, default features). That yields the source
+    archive, SHA512, patches, CMake subdirectory and options exactly as vcpkg computes them.
+  - The source is then downloaded and checked against vcpkg's SHA512, patched, and configured
+    with CMake + Ninja for Windows inside the container (debug info forced to `/Z7`: CMake's
+    `/Zi` needs mspdbsrv). Every C TU in `compile_commands.json` is preprocessed with its own
+    defines and include paths.
+- **Builds (`records.py`):** TUs compile through the compile service. They are linked into one
+  DLL with `/OPT:NOREF /OPT:NOICF`, so every function keeps its own address, and a `.map`.
+- **Pseudo-C:** Ghidra runs on the DLL. The map's addresses are passed as extra entry points so
+  that helpers every caller inlined (unreferenced, often without unwind data) still get
+  decompiled.
+- **Context slicing (`context.py`)** turns a TU into the record's `source` and `context`:
+  - `source` is the function, preceded by the definitions of TU-defined library functions that
+    are called in the C but absent from its machine code (inlined).
+  - `context` is every top-level declaration the source transitively references, in TU order
+    and under the `#pragma pack` it was declared with. Types are walked as well as references,
+    because libclang omits some typedef `TYPE_REF`s.
+  - Callees that stay calls are declared without `static` (MSVC rejects a static function that
+    is declared and used but not defined). Toolchain-header inline helpers are defined in the
+    context.
+  - Each record is **verified**: does context + source recompile to exactly the target? The
+    measured rate is the oracle ceiling for per-function matching.
+  - Declarations-only context reproduces the target most often (zlib `/O2`: 143/153; with
+    callee bodies in the context, 113). Visible bodies change inlining decisions. The remaining
+    misses are TU-wide effects: delta-debugging `deflate_fast` showed that its code depends on
+    the definitions of *other callers* of a static callee. `/Od` verifies 100%.
+- **Finalize (`dataset.py`):** drop records under 3 instructions or whose source breaks the hard
+  rules, deduplicate on the exact target (verified first), and split by library
+  (`splits.toml`). The test set is a size-bucketed sample of verified test-library records;
+  the rest of those libraries is never used. Train/val records whose anonymized target occurs in
+  test are dropped. Train records get **context dropout**: `model_context` loses part (15%) or
+  all (5%) of the context.
+- **Repair data (`repair.py`, `perturb.py`):** AST-level semantic-preserving edits (swap
+  independent declarations or assignments, `for`↔`while` when no `continue`, compound
+  assignment, `++`, inverted `if`, split `return`). They are compiled under the record's
+  configuration, and those that compile but no longer match are kept with the harness diff, as
+  `(perturbed, diff) -> source`.
+
 ### Corpus and C parsing (`data/`)
 
 - `corpus.toml` pins source archives by sha256: zlib 1.3.1, Lua 5.4.7, lz4 1.10.0, cJSON 1.7.18
@@ -392,10 +445,8 @@ Docker Desktop, remote engines and podman.
 
 ## Where the next phases plug in
 
-- **Phase 3 (`data/`, `decomp/`):** vcpkg builds run through `CompileService.run_raw` with
-  `outputs=` for `/P` files. Per-function records reuse `split_tu` (source and context),
-  `normalize` (target) and `cparse` (context reduction). Pseudo-C comes from
-  `decomp.GhidraDecompiler`, preferably run on a linked build of each library.
+- **Phase 3:** see the pipeline section above. More vcpkg ports only need allowlist entries;
+  ports with dependencies need their dependencies' headers at configure time (not yet done).
 - **Phase 4 (`agent/`, `eval/`):** the agent's `compile(source)` tool is `harness.score_candidate`.
   `try_flags` is the same call with different flags. Hard rules (no `#pragma optimize`,
   `__pragma`, naked functions, byte-emitting intrinsics, signature changes) belong in the harness

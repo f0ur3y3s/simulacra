@@ -53,6 +53,16 @@ Known limits: `/Zi` cannot run under Wine (mspdbsrv), so PDB tests use `/Z7`-bui
 carry compiler builds per compiland but no command line; PDBs from real Windows `/Zi` builds also
 carry the command line (`S_ENVBLOCK`), from which the exact flags are taken.
 
+### Dataset (Phase 3)
+
+| command | purpose |
+|---|---|
+| `simulacra dataset ports [--libraries zstd,expat]` | fetch, patch, configure and preprocess vcpkg ports (allowlist in `data/vcpkg_ports.toml`) |
+| `simulacra dataset build [--libraries …] [--toolchains …] [--flagsets …]` | sources → DLL builds → Ghidra → per-function record shards (resumable) |
+| `simulacra dataset finalize` | filters, dedup, library split, test sample, context dropout → `datasets/phase3/final/` |
+| `simulacra dataset repair [--max-records N]` | repair examples from perturbed sources that compile but no longer match |
+| `simulacra dataset stats` | the final manifest |
+
 ### Decompilation
 
 | command | purpose |

@@ -3,16 +3,22 @@
 
 Job:    {"files": {"name": "text", ...}, "args": ["/c", ...], "obj": "src.obj", "timeout": 20,
          "outputs": ["extra.map", ...],                       (optional)
-         "binary_files": {"name": "<base64>", ...}}           (optional, e.g. objects to link)
+         "binary_files": {"name": "<base64>", ...},           (optional, e.g. objects to link)
+         "exec": ["cmake", "-P", "x.cmake"],                    (optional: run this, not cl)
+         "output_globs": ["out/**/*.i", ...]}                   (optional, relative to the job)
 Result: {"ok": bool, "returncode": int, "stdout": str, "stderr": str,
          "obj_b64": str | null, "outputs_b64": {name: str | null}, "elapsed": float,
          "timed_out": bool}
+
+With "exec", `ok` reflects the exit status and "obj" may be empty; outputs matched by
+"output_globs" are returned in "outputs_b64" alongside the named ones.
 
 Every job runs in the same fixed directory (/work/job) so that paths embedded in the object
 (e.g. /Z7 debug info) are identical across workers and runs.
 """
 
 import base64
+import glob
 import json
 import os
 import shutil
@@ -48,8 +54,11 @@ def main() -> None:
 
     timed_out = False
     start = time.monotonic()
+    argv = job["exec"] if job.get("exec") else [CL, *job["args"]]
+    env = dict(os.environ, PATH="/opt/msvc/bin/x64:" + os.environ.get("PATH", ""))
     proc = subprocess.Popen(
-        [CL, *job["args"]],
+        argv,
+        env=env,
         cwd=JOB_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -64,9 +73,9 @@ def main() -> None:
         out, err = proc.communicate()
     elapsed = time.monotonic() - start
 
-    obj_path = os.path.join(JOB_DIR, job["obj"])
+    obj_path = os.path.join(JOB_DIR, job.get("obj") or "")
     obj_b64 = None
-    if proc.returncode == 0 and not timed_out and os.path.exists(obj_path):
+    if job.get("obj") and proc.returncode == 0 and not timed_out and os.path.isfile(obj_path):
         with open(obj_path, "rb") as f:
             obj_b64 = base64.b64encode(f.read()).decode("ascii")
 
@@ -79,11 +88,21 @@ def main() -> None:
                 outputs[name] = base64.b64encode(f.read()).decode("ascii")
         else:
             outputs[name] = None
+    for pattern in job.get("output_globs", []):
+        for path in glob.glob(os.path.join(JOB_DIR, pattern), recursive=True):
+            if os.path.isfile(path):
+                rel = os.path.relpath(path, JOB_DIR).replace(os.sep, "/")
+                with open(path, "rb") as f:
+                    outputs[rel] = base64.b64encode(f.read()).decode("ascii")
+
+    ok = obj_b64 is not None
+    if job.get("exec"):
+        ok = proc.returncode == 0 and not timed_out
 
     json.dump(
         {
             "outputs_b64": outputs,
-            "ok": obj_b64 is not None,
+            "ok": ok,
             "returncode": proc.returncode,
             "stdout": out.decode("utf-8", "replace"),
             "stderr": err.decode("utf-8", "replace"),

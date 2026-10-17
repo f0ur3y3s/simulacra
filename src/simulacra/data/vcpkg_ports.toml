@@ -1,0 +1,48 @@
+# Phase 3 library allowlist: vcpkg ports built for the dataset (CLAUDE.md Phase 3 step 1).
+#
+# vcpkg itself cannot drive MSVC from a Linux host, so the ports serve as a pinned *catalog*:
+# each portfile is evaluated (cmake -P with stubbed vcpkg helpers) for x64-windows-static to get
+# its source archive, SHA512, patches and CMake options; sources are configured with CMake inside
+# the toolchain container and every C TU is preprocessed with its own flags.
+#
+# Start: pure-C ports with no dependencies besides vcpkg's own CMake helpers.
+
+[vcpkg]
+repo = "https://github.com/microsoft/vcpkg.git"
+commit = "7d1c862c25e1bde631d866d82fdc86213983271c"
+
+[[port]]
+name = "zstd"
+
+[[port]]
+name = "libyaml"
+
+[[port]]
+name = "jansson"
+
+[[port]]
+name = "expat"
+
+[[port]]
+name = "utf8proc"
+
+[[port]]
+name = "libogg"
+
+[[port]]
+name = "libdeflate"
+
+[[port]]
+name = "cmark"
+
+[[port]]
+name = "md4c"
+
+[[port]]
+name = "libuv"
+
+[[port]]
+name = "pcre2"
+
+[[port]]
+name = "mbedtls"

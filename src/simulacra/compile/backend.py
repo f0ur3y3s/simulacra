@@ -42,6 +42,8 @@ class Backend(Protocol):
         timeout: float,
         outputs: tuple[str, ...] = (),
         binary_files: dict[str, bytes] | None = None,
+        exec_argv: list[str] | None = None,
+        output_globs: tuple[str, ...] = (),
     ) -> RunOutput: ...
 
     def close(self) -> None: ...
@@ -85,6 +87,8 @@ class DockerWorker:
         timeout: float,
         outputs: tuple[str, ...] = (),
         binary_files: dict[str, bytes] | None = None,
+        exec_argv: list[str] | None = None,
+        output_globs: tuple[str, ...] = (),
     ) -> RunOutput:
         job = json.dumps(
             {
@@ -96,6 +100,8 @@ class DockerWorker:
                 "obj": obj,
                 "timeout": timeout,
                 "outputs": list(outputs),
+                "exec": exec_argv,
+                "output_globs": list(output_globs),
             }
         )
         start = time.monotonic()
@@ -178,10 +184,12 @@ class DockerPool:
         timeout: float,
         outputs: tuple[str, ...] = (),
         binary_files: dict[str, bytes] | None = None,
+        exec_argv: list[str] | None = None,
+        output_globs: tuple[str, ...] = (),
     ) -> RunOutput:
         w = self._idle.get()
         try:
-            return w.run(files, args, obj, timeout, outputs, binary_files)
+            return w.run(files, args, obj, timeout, outputs, binary_files, exec_argv, output_globs)
         finally:
             self._idle.put(w)
 
@@ -212,6 +220,8 @@ class NativeBackend:
         timeout: float,
         outputs: tuple[str, ...] = (),
         binary_files: dict[str, bytes] | None = None,
+        exec_argv: list[str] | None = None,
+        output_globs: tuple[str, ...] = (),
     ) -> RunOutput:
         with tempfile.TemporaryDirectory(prefix="simulacra-") as d:
             for name, text in files.items():
@@ -225,7 +235,11 @@ class NativeBackend:
             start = time.monotonic()
             try:
                 proc = subprocess.run(
-                    [self.cl, *args], cwd=d, capture_output=True, timeout=timeout, check=False
+                    exec_argv or [self.cl, *args],
+                    cwd=d,
+                    capture_output=True,
+                    timeout=timeout,
+                    check=False,
                 )
             except subprocess.TimeoutExpired:
                 return RunOutput(False, -1, "", "timeout", b"", timeout, True)
@@ -237,6 +251,21 @@ class NativeBackend:
                 for n in outputs
                 if proc.returncode == 0 and Path(d, n).is_file()
             }
+            for pattern in output_globs:
+                for path in Path(d).glob(pattern):
+                    if path.is_file():
+                        extra[path.relative_to(d).as_posix()] = path.read_bytes()
+            if exec_argv:
+                return RunOutput(
+                    proc.returncode == 0,
+                    proc.returncode,
+                    proc.stdout.decode("utf-8", "replace"),
+                    proc.stderr.decode("utf-8", "replace"),
+                    data,
+                    elapsed,
+                    False,
+                    extra,
+                )
             return RunOutput(
                 bool(data),
                 proc.returncode,

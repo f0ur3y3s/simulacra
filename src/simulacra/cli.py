@@ -365,6 +365,17 @@ def cmd_dataset(ns: argparse.Namespace) -> int:
         path = PHASE3_DIR / "final" / "manifest.json"
         print(path.read_text(encoding="utf-8") if path.exists() else "no dataset yet")
         return 0
+    if ns.action == "ports":
+        from simulacra.compile import CompileService
+        from simulacra.data.vcpkg import add_port_sources
+        from simulacra.toolchain import load_registry
+
+        tcs = ns.toolchains.split(",") if ns.toolchains else list(load_registry())
+        ports = ns.libraries.split(",") if ns.libraries else None
+        with CompileService(workers=ns.workers or 2) as svc:
+            for key, line in add_port_sources(svc, ports, tcs).items():
+                print(f"{key:28} {line}", flush=True)
+        return 0
     if ns.action == "repair":
         from simulacra.compile import CompileService
         from simulacra.data.repair import build_repairs
@@ -388,7 +399,15 @@ def cmd_dataset(ns: argparse.Namespace) -> int:
 
     toolchains = ns.toolchains.split(",") if ns.toolchains else list(load_registry())
     flagsets = ns.flagsets.split(",") if ns.flagsets else list(load_flagsets())
-    libraries = ns.libraries.split(",") if ns.libraries else [s.name for s in load_specs()]
+    if ns.libraries:
+        libraries = ns.libraries.split(",")
+    else:
+        from simulacra.data.sources import SOURCES_DIR, load_sources
+
+        libraries = [s.name for s in load_specs()]
+        for tc in toolchains:
+            if (SOURCES_DIR / tc / "manifest.json").exists():
+                libraries += [t.library for t in load_sources(tc) if t.library not in libraries]
     with CompileService(workers=ns.workers) as svc:
         build_sources(svc, toolchains, libraries)
         builder = Phase3Builder(svc)
@@ -526,11 +545,13 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_decomp)
 
     p = sub.add_parser("dataset", help="Phase 3: build records, finalize splits, stats")
-    p.add_argument("action", choices=["build", "finalize", "repair", "stats"])
+    p.add_argument("action", choices=["ports", "build", "finalize", "repair", "stats"])
     p.add_argument("--max-records", type=int, help="repair: cap the number of base records")
     p.add_argument("--toolchains", help="comma-separated (default: all registered)")
     p.add_argument("--flagsets", help="comma-separated names from flagsets.toml (default: all)")
-    p.add_argument("--libraries", help="comma-separated (default: all in corpus.toml)")
+    p.add_argument(
+        "--libraries", help="comma-separated; ports: vcpkg port names (default: the allowlist)"
+    )
     p.add_argument("--force", action="store_true", help="rebuild existing record shards")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--workers", type=int)

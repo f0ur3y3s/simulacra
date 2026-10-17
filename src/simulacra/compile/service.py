@@ -79,9 +79,14 @@ class CompileService:
         timeout: float = 120.0,
         outputs: tuple[str, ...] = (),
         binary_files: dict[str, bytes] | None = None,
+        exec_argv: list[str] | None = None,
+        output_globs: tuple[str, ...] = (),
     ) -> RunOutput:
-        """Run cl.exe with arbitrary arguments (preprocessing, linking test images). Uncached."""
-        return self._backend(toolchain_id).run(files, args, output, timeout, outputs, binary_files)
+        """Run cl.exe with arbitrary arguments (preprocessing, linking test images), or any
+        command via `exec_argv` (e.g. CMake). Uncached."""
+        return self._backend(toolchain_id).run(
+            files, args, output, timeout, outputs, binary_files, exec_argv, output_globs
+        )
 
     def compile_many(self, reqs: Iterable[CompileRequest]) -> Iterator[CompileResult]:
         """Compile concurrently; yields results in request order."""

@@ -13,6 +13,7 @@ _PACK = re.compile(
 )
 
 DEFAULT_PACK = 16  # MSVC x64 default; `#pragma pack()` restores it
+TOOLCHAIN_ROOT = "/opt/msvc/"
 
 
 @dataclass(frozen=True)
@@ -33,9 +34,10 @@ class LineMap:
         return self.files[i] if i >= 0 else ""
 
     def is_library(self, offset: int) -> bool:
-        """Library-owned code comes from relative paths; toolchain headers are absolute."""
-        f = self.file_at(offset)
-        return bool(f) and not f.startswith(("/", "\\")) and ":" not in f[:3]
+        """Library-owned code is anything not under the toolchain's own tree (MSVC + SDK
+        headers live in /opt/msvc inside the container); generated headers count as library."""
+        f = self.file_at(offset).replace("\\", "/").lower()
+        return bool(f) and TOOLCHAIN_ROOT not in f
 
 
 @dataclass(frozen=True)

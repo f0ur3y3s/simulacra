@@ -156,7 +156,7 @@ class Phase3Builder:
         out_dir = self.root / "builds" / toolchain / flagset / library
         dll_path, map_path = out_dir / "lib.dll", out_dir / "lib.map"
         if not dll_path.exists():
-            names = {f"{Path(t).stem}.obj": o for t, o in objs.items()}
+            names = {t.replace("/", "__")[:-2] + ".obj": o for t, o in objs.items()}
             exports = export_names([t.text() for t in tus if t.tu in objs])
             files = {"lib.def": "EXPORTS\n" + "".join(f"    {n}\n" for n in exports)}
             args = [
