@@ -8,7 +8,7 @@
 #   docker build -t simulacra-ghidra:12.1.2 docker/ghidra
 #
 # Run (what simulacra.decomp does): the binary on stdin, JSON on stdout, no network.
-#   docker run -i --rm --network none simulacra-ghidra:12.1.2 x.obj [names...] < x.obj
+#   (stdin: a tar of binary/<name> + functions.txt; see decompile.sh and decomp/ghidra.py)
 
 FROM eclipse-temurin:21-jdk AS fetch
 

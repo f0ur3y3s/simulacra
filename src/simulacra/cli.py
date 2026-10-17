@@ -357,6 +357,49 @@ def cmd_decomp(ns: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dataset(ns: argparse.Namespace) -> int:
+    from simulacra.data.dataset import finalize
+    from simulacra.data.records import PHASE3_DIR
+
+    if ns.action == "stats":
+        path = PHASE3_DIR / "final" / "manifest.json"
+        print(path.read_text(encoding="utf-8") if path.exists() else "no dataset yet")
+        return 0
+    if ns.action == "repair":
+        from simulacra.compile import CompileService
+        from simulacra.data.repair import build_repairs
+
+        with CompileService(workers=ns.workers) as svc:
+            rstats = build_repairs(svc, max_records=ns.max_records, seed=ns.seed)
+        print(dict(sorted(rstats.items())))
+        return 0
+    if ns.action == "finalize":
+        man = finalize(seed=ns.seed)
+        for split, info in man["splits"].items():
+            print(f"{split:6} {info['records']:6} records, {info['verified']:6} verified")
+        print("dropped:", man["dropped"])
+        return 0
+
+    from simulacra.compile import CompileService
+    from simulacra.data.corpus import load_specs
+    from simulacra.data.records import Phase3Builder
+    from simulacra.data.sources import build_sources
+    from simulacra.toolchain import load_flagsets, load_registry
+
+    toolchains = ns.toolchains.split(",") if ns.toolchains else list(load_registry())
+    flagsets = ns.flagsets.split(",") if ns.flagsets else list(load_flagsets())
+    libraries = ns.libraries.split(",") if ns.libraries else [s.name for s in load_specs()]
+    with CompileService(workers=ns.workers) as svc:
+        build_sources(svc, toolchains, libraries)
+        builder = Phase3Builder(svc)
+        for tc in toolchains:
+            for fs in flagsets:
+                for lib in libraries:
+                    st = builder.records(tc, fs, lib, force=ns.force)
+                    print(st.line(), flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="simulacra", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -481,6 +524,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-cache", action="store_true")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_decomp)
+
+    p = sub.add_parser("dataset", help="Phase 3: build records, finalize splits, stats")
+    p.add_argument("action", choices=["build", "finalize", "repair", "stats"])
+    p.add_argument("--max-records", type=int, help="repair: cap the number of base records")
+    p.add_argument("--toolchains", help="comma-separated (default: all registered)")
+    p.add_argument("--flagsets", help="comma-separated names from flagsets.toml (default: all)")
+    p.add_argument("--libraries", help="comma-separated (default: all in corpus.toml)")
+    p.add_argument("--force", action="store_true", help="rebuild existing record shards")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--workers", type=int)
+    p.set_defaults(fn=cmd_dataset)
 
     ns = ap.parse_args(argv)
     handler: Handler = ns.fn

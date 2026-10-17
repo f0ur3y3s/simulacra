@@ -25,6 +25,7 @@ from simulacra.fingerprint.core import Anchor, confirm, fingerprint, select_anch
 from simulacra.fingerprint.db import ToolchainRecord
 from simulacra.fingerprint.rich import strip_rich
 from simulacra.pe import PEFunctions, extract_pe_function, parse_pe
+from simulacra.pe.mapfile import parse_map
 from simulacra.toolchain import load_registry
 
 EXCLUDE_TUS = {"lua/lua.c", "lua/luac.c"}  # programs with main(), not library code
@@ -32,7 +33,6 @@ OPTS = ("/O2", "/O1", "/Od")
 GSS = ("/GS", "/GS-")
 RUNTIMES = ("/MT", "/MD")
 _INLINE_DEF = re.compile(r"^\s*(?:static\s+)?(?:__inline|__forceinline|inline)\b")
-_MAP_LINE = re.compile(r"^\s*[0-9a-f]{4}:[0-9a-f]{8}\s+(\S+)\s+([0-9a-f]{16})\s+f\s", re.I)
 
 
 @dataclass(frozen=True)
@@ -129,12 +129,9 @@ def build_binary(
     out = service.run_raw(files, args, "lib.dll", cfg.toolchain, timeout=900, outputs=("lib.map",))
     if not out.ok:
         raise RuntimeError(f"building {cfg.name} failed:\n{out.stdout[-3000:]}")
-    image = parse_pe(out.obj)
-    names: dict[str, int] = {}
-    for line in out.outputs["lib.map"].decode("utf-8", "replace").splitlines():
-        m = _MAP_LINE.match(line)
-        if m:
-            names.setdefault(m.group(1), int(m.group(2), 16) - image.image_base)
+    names = parse_map(
+        out.outputs["lib.map"].decode("utf-8", "replace"), parse_pe(out.obj).image_base
+    )
     return out.obj, names
 
 
@@ -291,12 +288,9 @@ def build_mixed_binary(
     )
     if not out.ok:
         raise RuntimeError(f"linking {a.name}+{b.name} failed:\n{out.stdout[-3000:]}")
-    image = parse_pe(out.obj)
-    names: dict[str, int] = {}
-    for line in out.outputs["lib.map"].decode("utf-8", "replace").splitlines():
-        m = _MAP_LINE.match(line)
-        if m:
-            names.setdefault(m.group(1), int(m.group(2), 16) - image.image_base)
+    names = parse_map(
+        out.outputs["lib.map"].decode("utf-8", "replace"), parse_pe(out.obj).image_base
+    )
     return out.obj, names
 
 

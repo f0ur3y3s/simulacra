@@ -8,9 +8,11 @@ file name and contents, and the requested function names.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import subprocess
+import tarfile
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -24,14 +26,20 @@ GHIDRA_IMAGE = f"simulacra-ghidra:{GHIDRA_VERSION}"
 
 # Ghidra parses untrusted input: no network, no capabilities, read-only root, scratch on tmpfs.
 HARDENING = (
-    "--network", "none",
-    "--cap-drop", "ALL",
-    "--security-opt", "no-new-privileges",
+    "--network",
+    "none",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
     "--read-only",
-    "--tmpfs", "/tmp:mode=1777",
-    "--tmpfs", "/var/tmp:mode=1777",
-    "--tmpfs", "/home/ghidra:uid=10001,gid=10001,mode=0700",
-)  # fmt: skip
+    "--tmpfs",
+    "/tmp:mode=1777",
+    "--tmpfs",
+    "/var/tmp:mode=1777",
+    "--tmpfs",
+    "/home/ghidra:uid=10001,gid=10001,mode=0700",
+)
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 _WARNING = re.compile(r"^\s*/\* WARNING: .*\*/\s*$")
@@ -138,19 +146,44 @@ class GhidraDecompiler:
         h.update(data)
         return h.hexdigest()
 
-    def decompile(self, data: bytes, filename: str, functions: Sequence[str] = ()) -> DecompResult:
-        """Decompile `functions` (all non-thunk functions if empty) of one object or image."""
+    def decompile(
+        self,
+        data: bytes,
+        filename: str,
+        functions: Sequence[str] = (),
+        entries: Sequence[int] = (),
+    ) -> DecompResult:
+        """Decompile `functions` (all non-thunk functions if empty) of one object or image.
+
+        `entries` are RVAs to define as functions first: helpers every caller inlined have no
+        references, so Ghidra's analysis would otherwise never find them."""
         name = _SAFE_NAME.sub("_", Path(filename).name) or "input.bin"
+        functions = [*functions, *(f"@{e:x}" for e in sorted(set(entries)))]
         key = self._key(data, name, functions)
         path = self.cache_dir / key[:2] / f"{key}.json"
         if self.use_cache and path.exists():
             res = parse_result(path.read_text(encoding="utf-8"))
             res.cached = True
             return res
-        cmd = [docker_cli(), "run", "-i", "--rm", *HARDENING, "--memory", self.memory,
-               "--label", "simulacra.ghidra=1", self.image, name, *functions]  # fmt: skip
+        cmd = [
+            docker_cli(),
+            "run",
+            "-i",
+            "--rm",
+            *HARDENING,
+            "--memory",
+            self.memory,
+            "--label",
+            "simulacra.ghidra=1",
+            self.image,
+        ]
         try:
-            proc = subprocess.run(cmd, input=data, capture_output=True, timeout=self.timeout)
+            proc = subprocess.run(
+                cmd,
+                input=_request_tar(name, data, functions),
+                capture_output=True,
+                timeout=self.timeout,
+            )
         except subprocess.TimeoutExpired as e:
             raise GhidraError(f"ghidra timed out after {self.timeout:.0f}s on {filename}") from e
         if proc.returncode != 0:
@@ -178,3 +211,19 @@ class GhidraDecompiler:
 
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
             return list(ex.map(one, jobs))
+
+
+def _request_tar(name: str, data: bytes, functions: Sequence[str]) -> bytes:
+    """The container's stdin: `binary/<name>` plus `functions.txt`. Sending the function list
+    this way keeps it off the command line, which is length-limited on Windows."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for member, payload in (
+            (f"binary/{name}", data),
+            ("functions.txt", "".join(f"{f}\n" for f in functions).encode("utf-8")),
+        ):
+            info = tarfile.TarInfo(member)
+            info.size = len(payload)
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()

@@ -6,6 +6,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "iced-x86>=1.21",
     "libclang>=18.1",
+    "pyarrow>=17",
 ]
 
 [project.scripts]
@@ -38,7 +39,7 @@ python_version = "3.12"
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["clang.*"]
+module = ["clang.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

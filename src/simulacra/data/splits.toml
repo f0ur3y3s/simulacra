@@ -1,0 +1,12 @@
+# Phase 3 splits are by library: a library's functions are never in two splits.
+# Libraries not listed here go to train.
+
+[splits]
+test = ["cjson"]
+val = ["lz4"]
+
+[test]
+# Evaluation sample drawn from the test libraries, verified records only, spread over
+# instruction-count buckets [lo, hi).
+size = 400
+buckets = [[3, 10], [10, 30], [30, 100], [100, 300], [300, 100000]]

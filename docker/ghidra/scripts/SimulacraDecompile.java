@@ -1,6 +1,6 @@
 // Decompile functions of the current program and write them as one JSON document.
 //
-// Arguments: <output json> <file with one function name per line; empty = all functions>
+// Arguments: <output json> <file: one function name or "@<hex rva>" per line; no names = all>
 //
 // Output: {"program", "format", "compiler_spec", "image_base", "functions": [
 //   {"name", "entry" (offset from image base), "signature", "calling_convention",
@@ -34,10 +34,23 @@ public class SimulacraDecompile extends GhidraScript {
         if (args.length < 2) {
             throw new IllegalArgumentException("usage: SimulacraDecompile <out.json> <names.txt>");
         }
+        // Lines are function names to decompile, or "@<hex rva>" entry points to define first:
+        // helpers that every caller inlined have no references, so analysis never finds them.
         Set<String> wanted = new HashSet<>();
+        List<Long> entries = new ArrayList<>();
         for (String line : Files.readAllLines(Path.of(args[1]), StandardCharsets.UTF_8)) {
-            if (!line.isBlank()) {
-                wanted.add(line.strip());
+            String item = line.strip();
+            if (item.startsWith("@")) {
+                entries.add(Long.parseLong(item.substring(1).replaceFirst("^0[xX]", ""), 16));
+            } else if (!item.isEmpty()) {
+                wanted.add(item);
+            }
+        }
+        for (long rva : entries) {
+            ghidra.program.model.address.Address a = currentProgram.getImageBase().add(rva);
+            if (getFunctionAt(a) == null) {
+                disassemble(a);
+                createFunction(a, null);
             }
         }
 
