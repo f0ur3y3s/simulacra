@@ -11,7 +11,7 @@ and why it is built the way it is. The phase plan and acceptance criteria are in
 |---|---|---|
 | 1 | Harness: compile service, COFF/PE extraction, normalization, scoring | **Done**, acceptance passed |
 | 2 | Toolchain fingerprinter | **Done**, acceptance passed on 3 seeds |
-| 3 | Data pipeline (vcpkg builds, Ghidra, dataset records) | Not started |
+| 3 | Data pipeline (vcpkg builds, Ghidra, dataset records) | Started: Ghidra decompiler image + wrapper done |
 | 4 | Agent loop + baselines | Not started (`agent/prompts/` is a placeholder) |
 | 5 | Fine-tuning | Not started; needs approval after Phase 4 |
 
@@ -63,6 +63,10 @@ a function came from.
 docker/msvc-wine/
   Dockerfile              one image per toolchain (debian:trixie + Wine + msvc-wine + pinned MSVC/SDK)
   mscmatch-runner.py      in-container job runner: JSON job on stdin → JSON result on stdout
+docker/ghidra/
+  Dockerfile              pinned, checksum-verified Ghidra 12.1.2 on a JDK, non-root
+  decompile.sh            entrypoint: binary on stdin → analyzeHeadless → JSON on stdout
+  scripts/                MscmatchPrepare.java (pre-analysis options), MscmatchDecompile.java
 src/mscmatch/
   cli.py                  `mscmatch <cmd>`: thin argparse layer over the library functions
   harness.py              compile → extract → normalize → score helpers used by CLI and checks
@@ -77,7 +81,8 @@ src/mscmatch/
   score/                  score.py (weighted edit distance, alignment, diff text, anonymize)
   fingerprint/            rich.py, db.py, heuristics.py, pdb.py, core.py, evalset.py
   data/                   corpus.toml + corpus.py (pinned sources, preprocessing), cparse.py (libclang)
-  decomp/ agent/ train/ eval/   reserved for Phases 3–5
+  decomp/                 ghidra.py: GhidraDecompiler (hardened one-shot runs, disk cache)
+  agent/ train/ eval/     reserved for Phases 4–5
 tests/                    unit tests (no toolchain) + `-m docker` integration tests
 datasets/                 gitignored: corpus, fingerprint DB, reports, built eval binaries
 ```
@@ -291,6 +296,33 @@ binary ─┬─► rich.summarize ────────────┐
   linker `.map` is used only to locate anchor functions; the fingerprinter never sees it. Each
   binary is evaluated with the Rich header intact and stripped (`rich.strip_rich`).
 
+### Decompiler (`decomp/`, `docker/ghidra/`)
+
+Pseudo-C comes from Ghidra headless, following the pattern tiresias uses: the same pinned
+Ghidra 12.1.2 release with its sha256 checked at build time, a JDK base (Java post-scripts are
+compiled at runtime), and an unprivileged user. Like the MSVC runner, it needs no volume mounts.
+The binary goes in on stdin and one JSON document comes out on stdout, so it works the same on
+Docker Desktop, remote engines and podman.
+
+- **Per call:** `GhidraDecompiler.decompile(data, filename, functions)` starts one container with
+  `--network none --cap-drop ALL --security-opt no-new-privileges --read-only` and tmpfs scratch.
+  It returns a `DecompResult` holding `DecompiledFunction`s: name, entry offset, the
+  decompiler-recovered signature, calling convention, C text and callees. Results are cached on
+  disk, keyed by image, file name/contents and requested functions. `decompile_many` runs
+  several in parallel.
+- **Forced ABI.** The language and compiler spec are forced to `x86:LE:64:default` / `windows`.
+  Ghidra's COFF importer otherwise leaves objects with an unknown convention, and arguments in
+  rcx/rdx/r8/r9 disappear.
+- **Decompiler Parameter ID** (off by default in Ghidra) is enabled by `MscmatchPrepare.java`. It
+  carries parameters across calls within one binary and commits calling conventions. Arguments
+  passed straight through to an *external* callee still can't be recovered.
+- **Cost:** about 6 s per object and about 15 s for a 188-function DLL; JVM startup is most of it.
+- **Why Ghidra over radare2:** r2's own decompilers are much weaker. Its good option, r2ghidra,
+  embeds Ghidra's decompiler but runs it on r2's lighter analysis, with worse signature, type
+  and switch recovery. r2 starts faster, but that only matters for interactive per-call use,
+  and the agent gets pseudo-C precomputed. If latency ever matters, the answer is a persistent
+  Ghidra process (as tiresias's ghidra-mcp does), not a different engine.
+
 ### Corpus and C parsing (`data/`)
 
 - `corpus.toml` pins source archives by sha256: zlib 1.3.1, Lua 5.4.7, lz4 1.10.0, cJSON 1.7.18
@@ -330,6 +362,7 @@ binary ─┬─► rich.summarize ────────────┐
 | Preprocessed TUs as the corpus unit | Header-independent; same input on Wine and Windows | `/MT` and `/MD` variants needed |
 | Fingerprint DB generated from probes | Adding a toolchain needs no hand-written knowledge | CRT code not in the probes counts as "user" (mitigated by a large probe and weak-evidence rules) |
 | Anchors confirm flags | Heuristics can't separate configs that differ only in a few functions | Costs compiles (about 240 per binary) and needs C for the anchors |
+| Ghidra one-shot containers, binary over stdin | No mounts; same on every engine; hardened per run | ~3 s JVM startup per call; cached |
 
 ## Known limitations
 
@@ -340,6 +373,9 @@ binary ─┬─► rich.summarize ────────────┐
 - **Address heuristics.** An indexed `disp32` that happens to fall inside a data section is
   treated as a table reference. A bare RIP target is called a string if its bytes look printable.
   Both can misfire on unusual code.
+- **Switch tables in unlinked objects** decompile badly: their `__ImageBase`-relative table
+  relocations aren't applied before linking, so Ghidra treats the dispatch as an indirect call.
+  Linked images decompile cleanly, so Phase 3 should take pseudo-C from linked builds.
 - **Out of scope for now:** C++ (name mangling, EH, templates), LTCG binaries (only flagged), and
   toolsets older than VS 2017.
 
@@ -347,7 +383,8 @@ binary ─┬─► rich.summarize ────────────┐
 
 - **Phase 3 (`data/`, `decomp/`):** vcpkg builds run through `CompileService.run_raw` with
   `outputs=` for `/P` files. Per-function records reuse `split_tu` (source and context),
-  `normalize` (target) and `cparse` (context reduction). Ghidra headless goes in `decomp/`.
+  `normalize` (target) and `cparse` (context reduction). Pseudo-C comes from
+  `decomp.GhidraDecompiler`, preferably run on a linked build of each library.
 - **Phase 4 (`agent/`, `eval/`):** the agent's `compile(source)` tool is `harness.score_candidate`.
   `try_flags` is the same call with different flags. Hard rules (no `#pragma optimize`,
   `__pragma`, naked functions, byte-emitting intrinsics, signature changes) belong in the harness
@@ -367,6 +404,7 @@ binary ─┬─► rich.summarize ────────────┐
 | `test_compile_cache.py`, `test_verify.py` | nothing | cache keys and storage, manifest comparison |
 | `test_fingerprint.py` (unit part) | nothing | Rich summary, flag parsing, heuristics, anchor selection, GS rule |
 | `test_integration.py`, `test_fingerprint.py` (`-m docker`) | both images | determinism, errors, context, obj ≡ PE normalization, toolchain ID with and without Rich, PDB |
+| `test_decomp.py` | Ghidra image (`-m docker`) | result parsing, warning stripping, cache, forced Windows ABI, parameter propagation |
 
 `ruff` and `mypy --strict` cover `src/`. The acceptance runs (`roundtrip`, `equiv-manifest` +
 `verify-toolchain`, `fingerprint-eval`) are long-running and write reports to `datasets/reports/`.

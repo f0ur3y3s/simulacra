@@ -272,6 +272,34 @@ def cmd_fingerprint_eval(ns: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_decomp(ns: argparse.Namespace) -> int:
+    from mscmatch.compile.backend import docker_cli
+    from mscmatch.decomp import GhidraDecompiler, GhidraError
+    from mscmatch.decomp.ghidra import build_args
+
+    if ns.build:
+        return subprocess.call([docker_cli(), *build_args()])
+    if ns.file is None:
+        print("decomp: give a file, or --build", file=sys.stderr)
+        return 2
+    dec = GhidraDecompiler(use_cache=not ns.no_cache)
+    try:
+        res = dec.decompile(ns.file.read_bytes(), ns.file.name, ns.function or ())
+    except GhidraError as e:
+        print(e, file=sys.stderr)
+        return 1
+    if ns.json:
+        print(res.to_json())
+        return 0
+    for f in res.functions:
+        print(
+            f"// {f.name} @ {f.entry:#x}  {f.signature}"
+            + (f"  ERROR: {f.error}" if f.error else "")
+        )
+        print(f.pseudo_c(keep_warnings=ns.warnings))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="mscmatch", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -376,6 +404,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", type=Path, default=Path("datasets/fingerprint"))
     p.add_argument("--workers", type=int)
     p.set_defaults(fn=cmd_fingerprint_eval)
+
+    p = sub.add_parser("decomp", help="Ghidra pseudo-C for functions of an .obj or PE")
+    p.add_argument("file", type=Path, nargs="?")
+    p.add_argument("-f", "--function", action="append", help="repeatable; default: all")
+    p.add_argument("--build", action="store_true", help="build the Ghidra image")
+    p.add_argument("--warnings", action="store_true", help="keep Ghidra WARNING comments")
+    p.add_argument("--no-cache", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_decomp)
 
     ns = ap.parse_args(argv)
     handler: Handler = ns.fn

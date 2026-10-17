@@ -51,6 +51,13 @@ Known limits: `/Zi` cannot run under Wine (mspdbsrv), so PDB tests use `/Z7`-bui
 carry compiler builds per compiland but no command line; PDBs from real Windows `/Zi` builds also
 carry the command line (`S_ENVBLOCK`), from which the exact flags are taken.
 
+### Decompilation
+
+| command | purpose |
+|---|---|
+| `mscmatch decomp --build` | build the `mscmatch-ghidra:12.1.2` image (pinned, checksum-verified Ghidra) |
+| `mscmatch decomp file.obj\|file.dll [-f name ...] [--json]` | Ghidra pseudo-C for some or all functions (cached) |
+
 ## Wine equivalence check on Windows (1.4)
 
 On a Windows machine with the same toolset (VS 2022 17.14, cl 19.44.35229) installed, copy the
