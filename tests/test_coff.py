@@ -2,8 +2,8 @@ import struct
 
 import pytest
 
-from mscmatch.blob import RelocKind, TargetKind
-from mscmatch.coff import CoffError, extract_function, list_functions, parse_coff
+from simulacra.blob import RelocKind, TargetKind
+from simulacra.coff import CoffError, extract_function, list_functions, parse_coff
 from tests.coffbuilder import PDATA, RDATA, CoffBuilder
 
 REL32, ADDR32NB, ADDR64 = 4, 3, 1

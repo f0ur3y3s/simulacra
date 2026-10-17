@@ -1,18 +1,18 @@
-# Ghidra headless decompiler for mscmatch (pseudo-C for objects and PE targets).
+# Ghidra headless decompiler for simulacra (pseudo-C for objects and PE targets).
 #
 # Modelled on tiresias's backend/Dockerfile.ghidra-mcp: the same pinned, checksum-verified
 # Ghidra release on a JDK base (Java post-scripts are compiled at runtime, so a JRE is not
 # enough), run as an unprivileged user. None of ghidra-mcp / BinExport: one-shot
-# `analyzeHeadless` with our own post-script is all mscmatch needs.
+# `analyzeHeadless` with our own post-script is all simulacra needs.
 #
-#   docker build -t mscmatch-ghidra:12.1.2 docker/ghidra
+#   docker build -t simulacra-ghidra:12.1.2 docker/ghidra
 #
-# Run (what mscmatch.decomp does): the binary on stdin, JSON on stdout, no network.
-#   docker run -i --rm --network none mscmatch-ghidra:12.1.2 x.obj [names...] < x.obj
+# Run (what simulacra.decomp does): the binary on stdin, JSON on stdout, no network.
+#   docker run -i --rm --network none simulacra-ghidra:12.1.2 x.obj [names...] < x.obj
 
 FROM eclipse-temurin:21-jdk AS fetch
 
-# Keep in sync with GHIDRA_IMAGE in src/mscmatch/decomp/ghidra.py.
+# Keep in sync with GHIDRA_IMAGE in src/simulacra/decomp/ghidra.py.
 ARG GHIDRA_VERSION=12.1.2
 ARG GHIDRA_DATE=20260605
 ARG GHIDRA_SHA256=b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d
@@ -33,7 +33,7 @@ RUN wget -q \
 FROM eclipse-temurin:21-jdk
 
 COPY --from=fetch /opt/ghidra /opt/ghidra
-COPY scripts/ /opt/mscmatch-scripts/
+COPY scripts/ /opt/simulacra-scripts/
 COPY decompile.sh /usr/local/bin/decompile
 RUN sed -i 's/\r$//' /usr/local/bin/decompile && chmod 0755 /usr/local/bin/decompile
 
@@ -49,7 +49,7 @@ USER ghidra
 WORKDIR /home/ghidra
 
 # Smoke test: analyzeHeadless starts and finds the script directory.
-RUN /opt/ghidra/support/analyzeHeadless /tmp smoke -scriptPath /opt/mscmatch-scripts \
+RUN /opt/ghidra/support/analyzeHeadless /tmp smoke -scriptPath /opt/simulacra-scripts \
       -deleteProject 2>&1 | tail -3 ; rm -rf /tmp/smoke* /home/ghidra/.ghidra /home/ghidra/.config
 
 ENTRYPOINT ["/usr/local/bin/decompile"]

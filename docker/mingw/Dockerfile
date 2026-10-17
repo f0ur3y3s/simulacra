@@ -3,7 +3,7 @@
 # Not a matching target. These build the non-MSVC PE images that tests/test_producer.py uses
 # to check that the fingerprinter refuses binaries it cannot match.
 #
-#   docker build -t mscmatch-mingw-fixtures docker/mingw
+#   docker build -t simulacra-mingw-fixtures docker/mingw
 
 FROM debian:trixie-slim
 

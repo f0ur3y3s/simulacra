@@ -1,4 +1,4 @@
-# MSVC under Wine for mscmatch. One image per toolchain; see src/mscmatch/toolchain/registry.toml.
+# MSVC under Wine for simulacra. One image per toolchain; see src/simulacra/toolchain/registry.toml.
 #
 # Build args select the pinned toolset; the final RUN asserts that cl.exe reports the expected
 # build so a silently-updated manifest cannot produce an image with the wrong compiler.
@@ -39,8 +39,8 @@ RUN ./vsdownload.py --accept-license --major ${VS_MAJOR} \
     ./install.sh /opt/msvc && \
     cd / && rm -rf /opt/msvc-wine-src
 
-COPY mscmatch-runner.py /usr/local/bin/mscmatch-runner
-RUN chmod +x /usr/local/bin/mscmatch-runner
+COPY simulacra-runner.py /usr/local/bin/simulacra-runner
+RUN chmod +x /usr/local/bin/simulacra-runner
 
 # Smoke test + version assertion. cl prints its banner to stderr, interleaved with usage text.
 # Declared here (not at the top) so changing it does not invalidate the download layer.

@@ -1,6 +1,6 @@
-# mscmatch architecture
+# simulacra architecture
 
-mscmatch turns a function from an x64 MSVC binary into C source that recompiles to the **same
+simulacra turns a function from an x64 MSVC binary into C source that recompiles to the **same
 machine code**. This document describes how the code is organised, how data flows through it,
 and why it is built the way it is. The phase plan and acceptance criteria are in
 [`CLAUDE.md`](../CLAUDE.md); commands and setup are in the [README](../README.md).
@@ -62,13 +62,13 @@ a function came from.
 ```
 docker/msvc-wine/
   Dockerfile              one image per toolchain (debian:trixie + Wine + msvc-wine + pinned MSVC/SDK)
-  mscmatch-runner.py      in-container job runner: JSON job on stdin → JSON result on stdout
+  simulacra-runner.py      in-container job runner: JSON job on stdin → JSON result on stdout
 docker/ghidra/
   Dockerfile              pinned, checksum-verified Ghidra 12.1.2 on a JDK, non-root
   decompile.sh            entrypoint: binary on stdin → analyzeHeadless → JSON on stdout
-  scripts/                MscmatchPrepare.java (pre-analysis options), MscmatchDecompile.java
-src/mscmatch/
-  cli.py                  `mscmatch <cmd>`: thin argparse layer over the library functions
+  scripts/                SimulacraPrepare.java (pre-analysis options), SimulacraDecompile.java
+src/simulacra/
+  cli.py                  `simulacra <cmd>`: thin argparse layer over the library functions
   harness.py              compile → extract → normalize → score helpers used by CLI and checks
   acceptance.py           Phase 1 checks: round-trip, equivalence manifests, bench
   blob.py                 FunctionBlob, relocations, unwind-info decoding (container-agnostic)
@@ -98,7 +98,7 @@ and putting them in any one package would create circular imports.
 `registry.toml` is the only place a compiler version is defined. Each entry has the `cl.exe`
 version and build number, the linker version, the SDK version, and the Docker image tag
 (`msvc-<cl version>-sdk-<sdk>`). `build_args()` turns an entry into `docker build` arguments.
-`mscmatch toolchain build <id>` builds the image, and the Dockerfile's last step fails unless
+`simulacra toolchain build <id>` builds the image, and the Dockerfile's last step fails unless
 `cl` reports exactly the registered version. That check matters because the Visual Studio
 download manifest moves under us.
 
@@ -125,14 +125,14 @@ Backend.run(files, args, output, timeout, outputs)
   line numbers in error messages point at the agent's source.
 - **Workers.** Each worker is a long-lived container started with `--network none --memory 2g`.
   Its main process is a persistent `wineserver`, which keeps a warm compile at about 0.4 s. Jobs
-  run through `docker exec … mscmatch-runner`. The runner writes files into a fixed directory
+  run through `docker exec … simulacra-runner`. The runner writes files into a fixed directory
   (`/work/job`) so that paths embedded in the object are the same on every worker. It enforces
   the timeout inside the container by killing the process group. The host adds its own timeout
-  and restarts a worker if it hangs. Containers carry the label `mscmatch.worker=1`, and
-  `mscmatch toolchain prune` removes ones left behind by killed processes.
+  and restarts a worker if it hangs. Containers carry the label `simulacra.worker=1`, and
+  `simulacra toolchain prune` removes ones left behind by killed processes.
 - **Cache.** A sqlite index maps the key to (ok, stderr, blob hash). Object bytes are stored by
   sha256 under `blobs/`. Timeouts are never cached. The default location is
-  `~/.cache/mscmatch` (override with `MSCMATCH_CACHE`).
+  `~/.cache/simulacra` (override with `SIMULACRA_CACHE`).
 - **`run_raw`** runs `cl`/`link` with arbitrary arguments and returns any requested extra
   outputs (`.map`, `.pdb`). It is uncached and is used for preprocessing, building test images
   and fingerprint probes.
@@ -324,7 +324,7 @@ Docker Desktop, remote engines and podman.
 - **Forced ABI.** The language and compiler spec are forced to `x86:LE:64:default` / `windows`.
   Ghidra's COFF importer otherwise leaves objects with an unknown convention, and arguments in
   rcx/rdx/r8/r9 disappear.
-- **Decompiler Parameter ID** (off by default in Ghidra) is enabled by `MscmatchPrepare.java`. It
+- **Decompiler Parameter ID** (off by default in Ghidra) is enabled by `SimulacraPrepare.java`. It
   carries parameters across calls within one binary and commits calling conventions. Arguments
   passed straight through to an *external* callee still can't be recovered.
 - **Cost:** about 6 s per object and about 15 s for a 188-function DLL; JVM startup is most of it.

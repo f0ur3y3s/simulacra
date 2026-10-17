@@ -9,8 +9,8 @@ below were worked by hand from MSVC /O2 output and assert the same classificatio
 
 import pytest
 
-from mscmatch.disasm import NormalizedFunction, NormInsn
-from mscmatch.score import score
+from simulacra.disasm import NormalizedFunction, NormInsn
+from simulacra.score import score
 
 
 def fn(*lines: str) -> NormalizedFunction:

@@ -1,6 +1,6 @@
 """One test per normalization rule (CLAUDE.md 1.3)."""
 
-from mscmatch.blob import (
+from simulacra.blob import (
     FunctionBlob,
     FunctionReloc,
     RelocKind,
@@ -10,7 +10,7 @@ from mscmatch.blob import (
     UnwindCode,
     UnwindInfo,
 )
-from mscmatch.disasm import UnwindMode, normalize
+from simulacra.disasm import UnwindMode, normalize
 
 
 def rel(off: int, kind: TargetKind, name: str, addend: int = 0) -> FunctionReloc:

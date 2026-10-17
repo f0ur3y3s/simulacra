@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from mscmatch.compile import CompileRequest, CompileResult
-from mscmatch.compile.cache import CompileCache
-from mscmatch.compile.types import BASE_FLAGS, clean_diagnostics
+from simulacra.compile import CompileRequest, CompileResult
+from simulacra.compile.cache import CompileCache
+from simulacra.compile.types import BASE_FLAGS, clean_diagnostics
 
 
 def test_cache_key_covers_inputs_but_not_function_name() -> None:

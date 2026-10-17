@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from mscmatch.compile import CompileService
-from mscmatch.disasm import NormalizedFunction, NormInsn
-from mscmatch.fingerprint import Anchor, build_db, fingerprint
-from mscmatch.fingerprint.core import (
+from simulacra.compile import CompileService
+from simulacra.disasm import NormalizedFunction, NormInsn
+from simulacra.fingerprint import Anchor, build_db, fingerprint
+from simulacra.fingerprint.core import (
     AnchorMatrix,
     Candidate,
     anchor_category,
     segment,
     select_anchors,
 )
-from mscmatch.fingerprint.heuristics import FunctionFeatures, analyze_flags
-from mscmatch.fingerprint.pdb import codegen_flags, read_compilands
-from mscmatch.fingerprint.rich import strip_rich, summarize
-from mscmatch.pe import parse_pe
-from mscmatch.pe.image import RichEntry
+from simulacra.fingerprint.heuristics import FunctionFeatures, analyze_flags
+from simulacra.fingerprint.pdb import codegen_flags, read_compilands
+from simulacra.fingerprint.rich import strip_rich, summarize
+from simulacra.pe import parse_pe
+from simulacra.pe.image import RichEntry
 
 
 def test_rich_summary_groups_compilers_and_linkers() -> None:
@@ -197,7 +197,7 @@ def test_single_element_arrays_are_not_gs_buffers() -> None:
 
 
 def test_gs_buffer_functions_follow_msvc_rule() -> None:
-    from mscmatch.data.cparse import gs_buffer_functions
+    from simulacra.data.cparse import gs_buffer_functions
 
     src = """
     struct S { char name[16]; int x; };
@@ -262,7 +262,7 @@ int b4(int a, int b, int c) { return a * b + c * (a - b); }
 def test_assign_ranges_on_mixed_compiler_dll(svc: CompileService) -> None:
     import re as _re
 
-    from mscmatch.fingerprint.core import assign_ranges
+    from simulacra.fingerprint.core import assign_ranges
 
     a = svc.run_raw(
         {"a.c": MIXED_A}, ["/nologo", "/c", "/Gy", "/Od", "/MT", "a.c"], "a.obj", "vs2022-17.8"

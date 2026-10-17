@@ -1,4 +1,4 @@
-# mscmatch — Matching Decompilation for x64 MSVC Binaries
+# simulacra — Matching Decompilation for x64 MSVC Binaries
 
 ## What this project is
 
@@ -26,7 +26,7 @@ Do not start a later phase until the earlier phase's acceptance criteria pass.
 - Host: Debian Linux. MSVC runs under **msvc-wine** inside Docker. Never assume a Windows host
   except in the one-time equivalence check (Phase 1.4).
 - Determinism matters more than speed. Any nondeterminism in compile output is a bug.
-- Every component is a CLI subcommand (`mscmatch <cmd>`) plus an importable library function.
+- Every component is a CLI subcommand (`simulacra <cmd>`) plus an importable library function.
 - Cache aggressively: compile results keyed by `sha256(source + context + toolchain_id + flags)`.
 - Do not download or execute binaries from untrusted sources. Training data comes from building
   open-source code ourselves (vcpkg). Target binaries are supplied by the user.
@@ -35,12 +35,12 @@ Do not start a later phase until the earlier phase's acceptance criteria pass.
 ## Repository layout
 
 ```
-mscmatch/
+simulacra/
   CLAUDE.md
   pyproject.toml
   docker/
     msvc-wine/Dockerfile        # one image per toolchain version, tagged by cl.exe build
-  src/mscmatch/
+  src/simulacra/
     toolchain/                  # toolchain registry, version ids, flag sets
     compile/                    # compile service (worker pool, cache, sandbox)
     coff/                       # COFF .obj parsing, COMDAT extraction, relocations
@@ -101,7 +101,7 @@ mscmatch/
 
 - Script that compiles a fixed corpus (≥1,000 functions) and emits a manifest of
   `sha256(COMDAT code)` per function. The user runs the same script on a real Windows machine
-  with the same toolset; `mscmatch verify-toolchain a.json b.json` must report 100 % identical.
+  with the same toolset; `simulacra verify-toolchain a.json b.json` must report 100 % identical.
 
 ### 1.5 Scoring
 
@@ -116,14 +116,14 @@ mscmatch/
 
 ### Phase 1 acceptance
 
-- `mscmatch compile` + `mscmatch diff` round-trip: compiling a function's original source with the
+- `simulacra compile` + `simulacra diff` round-trip: compiling a function's original source with the
   original flags scores `exact=True` for ≥99 % of a 1,000-function sample.
 - Equivalence check script exists and passes on the user's Windows machine.
 - Throughput reported (compiles/sec at N workers).
 
 ## Phase 2 — Toolchain fingerprinter
 
-`mscmatch fingerprint <binary>` outputs ranked candidate `(toolchain_id, flags)` with evidence.
+`simulacra fingerprint <binary>` outputs ranked candidate `(toolchain_id, flags)` with evidence.
 
 0. **Producer check** — decide whether the image is MSVC output at all before ranking anything:
    Rich header, MSVC-only debug directory entries (`VC_FEATURE`/`POGO`), linker version, CRT
@@ -212,7 +212,7 @@ byte-emitting intrinsics, or whose exported signature / calling convention diffe
 
 ### Phase 4 acceptance
 
-- `mscmatch eval --model <backend>` reports on the test set: compile rate, exact-match rate,
+- `simulacra eval --model <backend>` reports on the test set: compile rate, exact-match rate,
   mean best score, mean turns to match, cost/time per function. Results saved as JSON + a
   Markdown summary.
 - Baselines run for one frontier model and one local open model.
@@ -241,7 +241,7 @@ Feed in a directory of binaries (an installed program: EXEs plus DLLs) and work 
 function by function, resumably. Depends on Phase 4 (the agent) and uses the Phase 3 dataset for
 library identification. Does not depend on Phase 5.
 
-1. **Ingest** — `mscmatch project init <dir> --project <path>`:
+1. **Ingest** — `simulacra project init <dir> --project <path>`:
    - Find PE files, dedupe by sha256, record version info and the import/export graph between
      them.
    - Producer check and fingerprint every binary (per address range where compilers are mixed).

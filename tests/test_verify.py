@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from mscmatch.acceptance import verify_manifests
+from simulacra.acceptance import verify_manifests
 
 
 def write(

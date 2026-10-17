@@ -7,10 +7,10 @@ from collections.abc import Iterator
 
 import pytest
 
-from mscmatch.compile import CompileRequest, CompileService
-from mscmatch.harness import compile_function, function_from_obj
-from mscmatch.pe import function_from_pe
-from mscmatch.score import anonymize, score
+from simulacra.compile import CompileRequest, CompileService
+from simulacra.harness import compile_function, function_from_obj
+from simulacra.pe import function_from_pe
+from simulacra.score import anonymize, score
 
 pytestmark = pytest.mark.docker
 

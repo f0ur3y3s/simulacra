@@ -1,7 +1,7 @@
 import pytest
 
-from mscmatch.disasm import NormalizedFunction, NormInsn
-from mscmatch.score import anonymize, score
+from simulacra.disasm import NormalizedFunction, NormInsn
+from simulacra.score import anonymize, score
 
 
 def fn(*lines: str, unwind: list[str] | None = None) -> NormalizedFunction:

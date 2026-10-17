@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from mscmatch.compile import CompileRequest, CompileService
-from mscmatch.decomp import GhidraDecompiler, parse_result
+from simulacra.compile import CompileRequest, CompileService
+from simulacra.decomp import GhidraDecompiler, parse_result
 
 SAMPLE = {
     "program": "a.obj",

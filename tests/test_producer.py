@@ -1,4 +1,4 @@
-"""Producer identification: refuse what mscmatch cannot match (MinGW GCC, clang/lld)."""
+"""Producer identification: refuse what simulacra cannot match (MinGW GCC, clang/lld)."""
 
 from __future__ import annotations
 
@@ -6,15 +6,15 @@ import subprocess
 
 import pytest
 
-from mscmatch.compile import CompileService
-from mscmatch.fingerprint.producer import (
+from simulacra.compile import CompileService
+from simulacra.fingerprint.producer import (
     Producer,
     ProducerFeatures,
     classify,
     identify_producer,
 )
-from mscmatch.fingerprint.rich import strip_rich
-from mscmatch.pe import parse_pe
+from simulacra.fingerprint.rich import strip_rich
+from simulacra.pe import parse_pe
 
 
 def feats(**kw: object) -> ProducerFeatures:
@@ -97,7 +97,7 @@ def test_no_evidence_is_unknown() -> None:
 
 # ---- real images ------------------------------------------------------------------------------
 
-FIXTURE_IMAGE = "mscmatch-mingw-fixtures"
+FIXTURE_IMAGE = "simulacra-mingw-fixtures"
 SRC = b"""
 #include <stdio.h>
 int count(const char *s, char c) { int n = 0; for (; *s; s++) n += *s == c; return n; }
